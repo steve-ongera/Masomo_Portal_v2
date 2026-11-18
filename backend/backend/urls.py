@@ -21,6 +21,7 @@ urlpatterns = [
     path("api/v1/boarding/", include("boarding.urls")),
     path("api/v1/student-id/", include("idcards.urls")),
     path("api/v1/", include("entitlements.urls")),
+    path("api/v1/", include("student360.urls")),
 
     # Core engine
     path("api/v1/", include("api.urls")),

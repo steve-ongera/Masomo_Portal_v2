@@ -17,7 +17,7 @@ const CONTACT = {
   developerName: "Steve Ongera",
   company: "Masomo Portal",
   email: "steveongera001@gmail.com",
-  phone: "0112 284 093 or 0757 790 687  ",
+  phone: "0112 284 093 or 07971 81 647  ",
   location: "Nairobi, Mombasa , Nyeri , Kisumu Kenya",
   hours: "Mon – Fri, 9:00 AM – 6:00 PM (EAT)",
 };

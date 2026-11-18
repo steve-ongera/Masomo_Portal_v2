@@ -1407,7 +1407,7 @@ class StudentProfileViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelVie
     """Deleting a student is guarded: requires IsSuperAdmin in addition to IsAdmin (see utils.py and get_permissions below)."""
 
     queryset = models.StudentProfile.objects.select_related("user").order_by("-user__date_joined")
-    permission_classes = [utils.IsAdminOrSecretary]
+    permission_classes = [utils.IsSchoolOffice] 
     pagination_class = StudentPagination
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_class = StudentProfileFilter
@@ -1743,7 +1743,7 @@ class TeacherSubjectAllocationViewSet(viewsets.ModelViewSet):
         .order_by("teacher__first_name", "teacher__last_name", "subject__name", "classroom__id")
     )
     serializer_class = serializers.TeacherSubjectAllocationSerializer
-    permission_classes = [utils.IsSecretaryOrAdmin]
+    permission_classes = [utils.IsSchoolOffice] 
     pagination_class = None
     filterset_fields = ["teacher", "classroom", "academic_year", "subject"]
     filter_backends = [DjangoFilterBackend]
@@ -2331,7 +2331,7 @@ class PromotionRuleViewSet(viewsets.ModelViewSet):
 class FeeStructureViewSet(viewsets.ModelViewSet):
     queryset = models.FeeStructure.objects.select_related("grade_level", "term__academic_year").prefetch_related("items").all()
     serializer_class = serializers.FeeStructureSerializer
-    permission_classes = [utils.IsAdminOrFinance]
+    permission_classes = [utils.IsSchoolOffice] 
     filterset_fields = ["grade_level", "term", "term__academic_year"]
     filter_backends = [DjangoFilterBackend]
 
@@ -2374,7 +2374,7 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         return super().get_permissions()
 
-    @action(detail=False, methods=["post"], permission_classes=[utils.IsAdminOrFinance])
+    @action(detail=False, methods=["post"], permission_classes=[utils.IsSchoolOffice] )
     def generate(self, request):
         enrollment = generics.get_object_or_404(models.Enrollment, pk=request.data.get("enrollment_id"))
         term = generics.get_object_or_404(models.Term, pk=request.data.get("term_id"))
@@ -2693,7 +2693,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
             ]
         }, status=201)
  
-    @action(detail=False, methods=["get"], url_path="receipt_lookup", permission_classes=[utils.IsAdminOrFinance])
+    @action(detail=False, methods=["get"], url_path="receipt_lookup", permission_classes=[utils.IsSchoolOffice] )
     def receipt_lookup(self, request):
         """GET /payments/receipt_lookup/?receipt_no=  -> receipt details + correction history."""
         receipt_no = request.query_params.get("receipt_no", "").strip().upper()
@@ -2721,7 +2721,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
             "history": history,
         })
  
-    @action(detail=False, methods=["post"], url_path="correct_receipt", permission_classes=[utils.IsAdminOrFinance])
+    @action(detail=False, methods=["post"], url_path="correct_receipt", permission_classes=[utils.IsSchoolOffice] )
     def correct_receipt(self, request):
         """
         POST /payments/correct_receipt/
@@ -2756,7 +2756,7 @@ class PaymentViewSet(viewsets.ModelViewSet):
             "payment_id": payments[-1].id,
         })
  
-    @action(detail=False, methods=["post"], url_path="add_alumni_balance", permission_classes=[utils.IsAdminOrFinance])
+    @action(detail=False, methods=["post"], url_path="add_alumni_balance", permission_classes=[utils.IsSchoolOffice] )
     def add_alumni_balance(self, request):
         """POST /payments/add_alumni_balance/ - register a past student who still owes fees."""
         serializer = serializers.AlumniBalanceSerializer(data=request.data)
@@ -3498,7 +3498,7 @@ class FinanceCollectionsReportView(APIView):
     academic year's date range.
     """
 
-    permission_classes = [utils.IsAdminOrFinance]
+    permission_classes = [utils.IsSchoolOffice] 
 
     def get(self, request):
         academic_years = models.AcademicYear.objects.all().order_by("-year")
@@ -3575,7 +3575,7 @@ class FinanceClassAnalysisReportView(APIView):
     and gender_balance_analysis are pie/summary-ready totals.
     """
 
-    permission_classes = [utils.IsAdminOrFinance]
+    permission_classes = [utils.IsSchoolOffice] 
 
     def get(self, request):
         academic_years = models.AcademicYear.objects.all().order_by("-year")
@@ -3992,7 +3992,7 @@ class CommunicationViewSet(viewsets.ModelViewSet):
     """
 
     queryset = models.Communication.objects.select_related("sender", "grade_level", "classroom", "academic_year").all()
-    permission_classes = [utils.IsAdminOrFinance]
+    permission_classes = [utils.IsSchoolOffice] 
     pagination_class = CommunicationPagination
     filterset_fields = ["category", "audience_type"]
     filter_backends = [DjangoFilterBackend]
@@ -4254,7 +4254,7 @@ class LicenseStatusView(APIView):
 class ExpenseCategoryViewSet(viewsets.ModelViewSet):
     queryset = models.ExpenseCategory.objects.all()
     serializer_class = serializers.ExpenseCategorySerializer
-    permission_classes = [utils.IsAdminOrFinance]
+    permission_classes = [utils.IsSchoolOffice] 
     filterset_fields = ["is_active"]
     filter_backends = [DjangoFilterBackend]
 
@@ -4270,7 +4270,7 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         "category", "term__academic_year", "academic_year", "recorded_by"
     ).all()
     serializer_class = serializers.ExpenseSerializer
-    permission_classes = [utils.IsAdminOrFinance]
+    permission_classes = [utils.IsSchoolOffice] 
     pagination_class = ExpensePagination
     filterset_fields = ["category", "academic_year", "term", "payment_method", "expense_date"]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
