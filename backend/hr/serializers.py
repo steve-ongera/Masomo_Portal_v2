@@ -1,0 +1,113 @@
+from rest_framework import serializers
+from . import models, services
+
+
+class DepartmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Department
+        fields = "__all__"
+
+
+class PositionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.Position
+        fields = "__all__"
+
+
+class LeaveTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = models.LeaveType
+        fields = "__all__"
+
+
+from django.contrib.auth import get_user_model
+from rest_framework import serializers
+from . import models, services
+
+User = get_user_model()
+
+# Accounts that belong to the student/parent portals can never be linked to staff
+NON_STAFF_ROLES = ("STUDENT", "PARENT")
+
+
+class EmployeeSerializer(serializers.ModelSerializer):
+    full_name = serializers.CharField(read_only=True)
+    department_name = serializers.CharField(source="department.name", read_only=True)
+    position_title = serializers.CharField(source="position.title", read_only=True)
+    has_login = serializers.SerializerMethodField()
+    linked_username = serializers.SerializerMethodField()
+    linked_role = serializers.SerializerMethodField()
+
+    # write-only: link (or relink) this employee to an existing user account
+    user_id = serializers.PrimaryKeyRelatedField(
+        source="user", queryset=User.objects.all(),
+        write_only=True, required=False, allow_null=True,
+    )
+
+    class Meta:
+        model = models.Employee
+        fields = "__all__"
+        read_only_fields = ("employee_no", "user", "status", "exit_date", "exit_reason")
+
+    def get_has_login(self, obj):
+        return obj.user_id is not None
+
+    def get_linked_username(self, obj):
+        return obj.user.username if obj.user_id else None
+
+    def get_linked_role(self, obj):
+        return obj.user.role if obj.user_id else None
+
+    def validate_user_id(self, user):
+        if user is None:
+            return user
+        if not user.is_active:
+            raise serializers.ValidationError("That user account is inactive.")
+        if user.role in NON_STAFF_ROLES:
+            raise serializers.ValidationError("Student and parent accounts cannot be linked to staff.")
+        clash = models.Employee.objects.filter(user=user)
+        if self.instance:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError("That account is already linked to another employee.")
+        return user
+
+    def validate(self, data):
+        inst = self.instance
+        new_user = data.get("user")
+        if inst and new_user is not None:
+            if inst.status == "EXITED":
+                raise serializers.ValidationError("An exited employee cannot be linked to an account.")
+            if inst.user_id and inst.user_id != new_user.pk:
+                raise serializers.ValidationError("This employee is already linked. Unlink the current account first.")
+        return data
+
+
+class LeaveRequestSerializer(serializers.ModelSerializer):
+    employee_name = serializers.CharField(source="employee.full_name", read_only=True)
+    leave_type_name = serializers.CharField(source="leave_type.name", read_only=True)
+
+    class Meta:
+        model = models.LeaveRequest
+        fields = "__all__"
+        read_only_fields = ("days", "status", "reviewed_by", "reviewed_at", "review_remarks")
+
+    def validate(self, data):
+        if data["end_date"] < data["start_date"]:
+            raise serializers.ValidationError("End date is before start date.")
+        data["days"] = len(services.weekdays_between(data["start_date"], data["end_date"]))
+        if data["days"] == 0:
+            raise serializers.ValidationError("That range has no working days.")
+        return data
+
+    def create(self, validated):
+        return models.LeaveRequest.objects.create(**validated)
+
+
+class AttendanceSerializer(serializers.ModelSerializer):
+    employee_name = serializers.CharField(source="employee.full_name", read_only=True)
+
+    class Meta:
+        model = models.StaffAttendance
+        fields = "__all__"
+        read_only_fields = ("recorded_by",)

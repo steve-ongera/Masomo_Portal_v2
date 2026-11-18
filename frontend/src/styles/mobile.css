@@ -1,0 +1,282 @@
+/* ==========================================================================
+   MOBILE.CSS — phone & touch UX layer for Masomo Portal.
+   Import AFTER main.css:
+       import "./styles/main.css";
+       import "./styles/mobile.css";
+   Driven by the attributes useDevice.js writes on <html>:
+       data-device, data-orientation, data-touch, data-os,
+       data-standalone, data-keyboard, and --app-height.
+   Everything is rem-based so it follows the root scale from main.css.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. TOUCH BASICS (any touch device)
+   -------------------------------------------------------------------------- */
+html[data-touch="true"] {
+  -webkit-tap-highlight-color: transparent;
+}
+/* kills the 300ms tap delay + accidental double-tap zoom on controls */
+html[data-touch="true"] a,
+html[data-touch="true"] button,
+html[data-touch="true"] input,
+html[data-touch="true"] select,
+html[data-touch="true"] textarea,
+html[data-touch="true"] label,
+html[data-touch="true"] [role="button"] {
+  touch-action: manipulation;
+}
+/* no sticky hover states after a tap */
+@media (hover: none) {
+  .table-hover tbody tr:hover { background: transparent; }
+  .app-sidebar__link:hover { background: transparent; transform: none; }
+  .app-sidebar__link--active:hover { background: var(--blue-600); }
+}
+/* pressed feedback instead of hover */
+html[data-touch="true"] .btn:active,
+html[data-touch="true"] .m-card--tappable:active,
+html[data-touch="true"] .bottom-nav__item:active { opacity: 0.8; }
+
+/* Real visible height (set from JS) - the shell never hides behind URL bars */
+html[data-device="phone"] .app-shell,
+html[data-device="phone"] .app-shell__main {
+  height: var(--app-height, 100dvh);
+}
+
+/* --------------------------------------------------------------------------
+   2. BOTTOM TAB BAR (phones)
+   -------------------------------------------------------------------------- */
+.bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 850;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  height: calc(3.6rem + var(--safe-bottom));
+  padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: saturate(1.4) blur(10px);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
+  border-top: 1px solid var(--border-color);
+  box-shadow: 0 -4px 14px rgba(20, 35, 56, 0.06);
+  animation: bottom-nav-in 0.2s var(--ease-standard);
+}
+@keyframes bottom-nav-in {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+
+.bottom-nav__item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  min-width: 0;
+  padding: 0.3rem 0.2rem;
+  border: none;
+  background: transparent;
+  color: var(--ink-500);
+  font-family: inherit;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+.bottom-nav__item i { font-size: 1.3rem; line-height: 1; transition: transform var(--duration-fast) var(--ease-standard); }
+.bottom-nav__item span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bottom-nav__item.is-active { color: var(--blue-700); }
+.bottom-nav__item.is-active i { transform: translateY(-1px); }
+.bottom-nav__item.is-active::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 1.6rem;
+  height: 3px;
+  transform: translateX(-50%);
+  border-radius: 0 0 3px 3px;
+  background: var(--gold-500);
+}
+
+/* room for the bar so content is never hidden behind it */
+html[data-device="phone"] .app-shell__content {
+  padding-bottom: calc(4.8rem + var(--safe-bottom));
+}
+/* the bar is hidden while typing, so give the space back */
+html[data-device="phone"][data-keyboard="open"] .app-shell__content {
+  padding-bottom: 1rem;
+}
+/* floating buttons sit above the bar */
+html[data-device="phone"] .btn-fab {
+  bottom: calc(4.4rem + var(--safe-bottom));
+}
+/* the bar replaces the navbar's own menu shortcut clutter on phones */
+html[data-device="phone"] .app-navbar__fullscreen { display: none; }
+
+/* short landscape phones: slimmer bar */
+html[data-device="phone"][data-orientation="landscape"] .bottom-nav { height: calc(2.9rem + var(--safe-bottom)); }
+html[data-device="phone"][data-orientation="landscape"] .bottom-nav__item { flex-direction: row; gap: 0.4rem; font-size: 0.7rem; }
+html[data-device="phone"][data-orientation="landscape"] .bottom-nav__item i { font-size: 1.1rem; }
+
+/* --------------------------------------------------------------------------
+   3. CARD LIST (ResponsiveTable on phones)
+   -------------------------------------------------------------------------- */
+.m-card-list { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.m-card {
+  background: var(--surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+}
+.m-card--tappable { cursor: pointer; }
+.m-card--tappable:focus-visible { outline: 2px solid var(--blue-500); outline-offset: 2px; }
+
+.m-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-color);
+}
+.m-card__title { font-weight: 700; font-size: var(--fs-base); color: var(--ink-900); min-width: 0; overflow-wrap: anywhere; }
+.m-card__chev { color: var(--ink-400); flex-shrink: 0; }
+
+.m-card__body { margin: 0; padding: 0.35rem 0.9rem; }
+.m-card__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px dashed var(--border-color);
+  font-size: var(--fs-sm);
+}
+.m-card__row:last-child { border-bottom: none; }
+.m-card__row dt { margin: 0; font-weight: 600; color: var(--ink-400); font-size: var(--fs-xs); flex-shrink: 0; }
+.m-card__row dd { margin: 0; color: var(--ink-900); font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+
+.m-card__actions {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.6rem 0.9rem 0.75rem;
+  border-top: 1px solid var(--border-color);
+}
+.m-card__actions .btn { flex: 1; }
+
+/* --------------------------------------------------------------------------
+   4. PHONE-SPECIFIC UI PATTERNS
+   -------------------------------------------------------------------------- */
+
+/* Modals become bottom sheets: easier to reach and dismiss with a thumb */
+html[data-device="phone"] .modal-dialog {
+  margin: 0;
+  max-width: none;
+  min-height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+html[data-device="phone"] .modal-content {
+  width: 100%;
+  max-height: 92dvh;
+  border-radius: 1rem 1rem 0 0;
+  padding-bottom: var(--safe-bottom);
+}
+html[data-device="phone"] .modal-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+html[data-device="phone"] .modal-header::before {
+  /* little grab handle */
+  content: "";
+  position: absolute;
+  top: 0.4rem;
+  left: 50%;
+  width: 2.25rem;
+  height: 4px;
+  transform: translateX(-50%);
+  border-radius: 4px;
+  background: var(--ink-200);
+}
+html[data-device="phone"] .modal-header { position: relative; padding-top: 1.1rem; }
+html[data-device="phone"] .modal-dialog.modal-fullscreen-sm-down,
+html[data-device="phone"] .modal-dialog.modal-fullscreen { align-items: stretch; }
+html[data-device="phone"] .modal-dialog.modal-fullscreen .modal-content { max-height: none; border-radius: 0; }
+
+/* Stack form columns, full-width controls */
+html[data-device="phone"] .row > [class*="col-md-"],
+html[data-device="phone"] .row > [class*="col-lg-"] { width: 100%; }
+html[data-device="phone"] .form-control,
+html[data-device="phone"] .form-select { width: 100%; }
+
+/* Page headers: title above, actions full width */
+html[data-device="phone"] .page-header { flex-direction: column; align-items: stretch; margin-bottom: var(--space-4); }
+html[data-device="phone"] .page-header__actions { width: 100%; }
+html[data-device="phone"] .page-header__actions .btn { flex: 1; }
+
+/* Sticky action bar for long forms: <div className="sticky-actions"> ... buttons ... </div> */
+.sticky-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.7rem 0;
+  background: linear-gradient(to top, var(--bg-shell) 70%, transparent);
+}
+.sticky-actions .btn { flex: 1; }
+@media (min-width: 768px) { .sticky-actions { position: static; background: none; justify-content: flex-end; } .sticky-actions .btn { flex: 0 0 auto; } }
+html[data-device="phone"] .sticky-actions { bottom: calc(3.6rem + var(--safe-bottom)); }
+html[data-device="phone"][data-keyboard="open"] .sticky-actions { bottom: 0; }
+
+/* Charts: compact height on phones. Wrap in <div className="chart-box"> */
+.chart-box { width: 100%; height: 20rem; min-width: 0; }
+html[data-device="phone"] .chart-box { height: 14rem; }
+html[data-device="phone"][data-orientation="landscape"] .chart-box { height: 11rem; }
+
+/* Cards: tighter padding on phones */
+html[data-device="phone"] .chart-card,
+html[data-device="phone"] .card { border-radius: var(--radius-md); }
+html[data-device="phone"] .chart-card { padding: 0.85rem; }
+
+/* Toasts: full width, below the notch */
+html[data-device="phone"] .toast-stack { left: 0.6rem; right: 0.6rem; width: auto; }
+
+/* Dropdown rows: bigger, easier to tap */
+html[data-device="phone"] .dropdown-item,
+html[data-device="phone"] .app-navbar__dropdown-item { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+
+/* Tablets in portrait: 2-up stat cards read better than 3-up squeezed */
+html[data-device="tablet"][data-orientation="portrait"] .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* --------------------------------------------------------------------------
+   5. OFFLINE + STANDALONE (installed app) POLISH
+   -------------------------------------------------------------------------- */
+/* installed PWA: stop the rubber-band bounce revealing the browser background */
+html[data-standalone="true"] body { overscroll-behavior-y: none; }
+
+/* slim offline banner. Render <div className="offline-banner">You're offline</div>
+   when !useDevice().isOnline */
+.offline-banner {
+  position: fixed;
+  top: var(--safe-top);
+  left: 0;
+  right: 0;
+  z-index: 1500;
+  padding: 0.35rem 0.75rem;
+  text-align: center;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--blue-900);
+  background: var(--gold-500);
+}

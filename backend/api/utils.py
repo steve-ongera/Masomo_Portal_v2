@@ -1,0 +1,371 @@
+#api/utils.py
+"""
+Small, reusable helpers: RBAC permission classes + misc utility functions.
+"""
+import re
+
+from rest_framework.permissions import BasePermission, SAFE_METHODS
+
+from . import models
+
+
+# ---------------------------------------------------------------------------
+# Admin-equivalent roles
+# ---------------------------------------------------------------------------
+# EXAM_OFFICER has the same permissions as ADMIN. Every permission class
+# below that used to check for ADMIN now checks for ADMIN_LIKE_ROLES
+# instead, so adding another admin-equivalent role later is a one-line
+# change here. IsSuperAdmin is deliberately NOT widened - it depends on
+# the is_super_admin flag, not on role.
+ADMIN_LIKE_ROLES = (
+    models.User.Role.ADMIN,
+    models.User.Role.EXAM_OFFICER,
+)
+
+
+def is_admin_like(user):
+    """True for ADMIN or any admin-equivalent role (e.g. EXAM_OFFICER)."""
+    return bool(user and user.is_authenticated and user.role in ADMIN_LIKE_ROLES)
+
+
+# ---------------------------------------------------------------------------
+# RBAC permission classes
+# ---------------------------------------------------------------------------
+class IsRole(BasePermission):
+    """Base class - subclass and set `allowed_roles`."""
+
+    allowed_roles = ()
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.role in self.allowed_roles
+        )
+
+
+class IsAdmin(IsRole):
+    allowed_roles = ADMIN_LIKE_ROLES
+
+
+class IsTeacher(IsRole):
+    allowed_roles = (models.User.Role.TEACHER,)
+
+
+class IsFinance(IsRole):
+    allowed_roles = (models.User.Role.FINANCE,)
+
+
+class IsStudent(IsRole):
+    allowed_roles = (models.User.Role.STUDENT,)
+
+
+class IsParent(IsRole):
+    allowed_roles = (models.User.Role.PARENT,)
+
+
+class IsAdminOrTeacher(IsRole):
+    allowed_roles = ADMIN_LIKE_ROLES + (models.User.Role.TEACHER,)
+
+
+class IsAdminOrFinance(IsRole):
+    allowed_roles = ADMIN_LIKE_ROLES + (models.User.Role.FINANCE,)
+
+
+class IsPrincipal(BasePermission):
+    """Principal-only."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role == models.User.Role.PRINCIPAL
+        )
+
+
+class IsSecretary(BasePermission):
+    """Secretary-only."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role == models.User.Role.SECRETARY
+        )
+
+
+class IsPrincipalOrAdmin(BasePermission):
+    """Principal's own dashboard, plus lets Admin preview it."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in ((models.User.Role.PRINCIPAL,) + ADMIN_LIKE_ROLES)
+        )
+
+
+class IsSecretaryOrAdmin(BasePermission):
+    """Secretary's own dashboard, plus lets Admin preview it."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in ((models.User.Role.SECRETARY,) + ADMIN_LIKE_ROLES)
+        )
+
+
+class IsAdminOrSecretary(BasePermission):
+    """
+    Student records, guardians, and the clearance desk — Secretary's
+    core front-office job. Used on AdmitStudentView,
+    StudentProfileViewSet (retrieve/update/reset_password),
+    ParentGuardianProfileViewSet, ParentStudentLinkViewSet, and
+    ClearanceApplicationViewSet.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (ADMIN_LIKE_ROLES + (models.User.Role.SECRETARY,))
+        )
+
+
+
+class IsAdminOrPrincipal(BasePermission):
+    """
+    Oversight views — reports and promotion previews. Used on
+    ReportsOverviewView and ClassRoomViewSet.promotion_preview.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (ADMIN_LIKE_ROLES + (models.User.Role.PRINCIPAL,))
+        )
+
+
+class IsSchoolOffice(BasePermission):
+    """
+    Admin, Principal, Secretary, Finance — everyone allowed to broadcast
+    a Communication. Used on CommunicationViewSet.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (
+                ADMIN_LIKE_ROLES + (
+                    models.User.Role.PRINCIPAL,
+                    models.User.Role.SECRETARY, models.User.Role.FINANCE,
+                )
+            )
+        )
+
+
+class IsStaffMember(BasePermission):
+    """
+    ADMIN (and admin-like), PRINCIPAL, SECRETARY, TEACHER, or FINANCE - used to gate
+    starting a new conversation, searching students (Communications'
+    "Specific Students" picker), and creating bulk Communications.
+    Deliberately does NOT include CAFETERIA - see IsStaffOrCafeteria.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in (
+                ADMIN_LIKE_ROLES + (
+                    models.User.Role.PRINCIPAL,
+                    models.User.Role.SECRETARY, models.User.Role.TEACHER,
+                    models.User.Role.FINANCE,
+                )
+            )
+        )
+
+
+class IsStaffOrCafeteria(BasePermission):
+    """
+    Everyone in IsStaffMember, PLUS an active CAFETERIA user. Use ONLY for
+    read-only student lookup (StudentProfileViewSet "list"), so the meal
+    card desk can search students by name / admission number. Do not use
+    it for anything that writes or for messaging.
+    """
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not (u and u.is_authenticated):
+            return False
+        if u.role in (
+            ADMIN_LIKE_ROLES + (
+                models.User.Role.PRINCIPAL,
+                models.User.Role.SECRETARY, models.User.Role.TEACHER,
+                models.User.Role.FINANCE,
+            )
+        ):
+            return True
+        return u.role == models.User.Role.CAFETERIA and bool(u.is_active_staff)
+
+
+class ReadOnlyOrAdmin(BasePermission):
+    """Anyone authenticated can read; only ADMIN (or admin-like) can write."""
+
+    def has_permission(self, request, view):
+        if not (request.user and request.user.is_authenticated):
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        return request.user.role in ADMIN_LIKE_ROLES
+
+
+class IsAdminOnly(BasePermission):
+    """
+    Admin-level only (License page, unlock users, security log).
+    Includes admin-equivalent roles such as EXAM_OFFICER.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated
+            and request.user.role in ADMIN_LIKE_ROLES
+        )
+
+
+
+class IsAdminSecretaryOrClassTeacher(BasePermission):
+    def has_permission(self, request, view):
+        u = request.user
+        return bool(
+            u and u.is_authenticated
+            and (u.is_superuser or u.role in (
+                ADMIN_LIKE_ROLES + (
+                    models.User.Role.SECRETARY,
+                    models.User.Role.PRINCIPAL, models.User.Role.TEACHER,
+                )
+            ))
+        )
+
+    def has_object_permission(self, request, view, obj):
+        u = request.user
+        if u.is_superuser or u.role in (
+            ADMIN_LIKE_ROLES + (models.User.Role.SECRETARY, models.User.Role.PRINCIPAL)
+        ):
+            return True
+        return u.role == models.User.Role.TEACHER and obj.class_teacher_id == u.id
+
+
+
+class IsSuperAdmin(BasePermission):
+    """
+    Extra gate for destructive actions. Being authenticated as role=ADMIN
+    (or even Django's is_superuser) is NOT enough on its own — the user's
+    is_super_admin flag must also be True. This flag is only ever set via
+    Django Admin/shell, never through the app's own API, so an ordinary
+    Admin can't grant it to themselves or anyone else.
+    """
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated and request.user.is_super_admin
+        )
+
+
+class IsAllocatedTeacherForClassroom(BasePermission):
+    """
+    Object-level check: a teacher may only enter/edit marks for a
+    (subject, classroom) pair they are actually allocated to.
+    ADMIN (and admin-like roles) always pass.
+    """
+
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+        if user.role in ADMIN_LIKE_ROLES:
+            return True
+        if user.role != models.User.Role.TEACHER:
+            return False
+        # obj is expected to be an ExamResult or something exposing .exam & .subject & .enrollment
+        classroom = obj.enrollment.classroom
+        return models.TeacherSubjectAllocation.objects.filter(
+            teacher=user, subject=obj.subject, classroom=classroom,
+            academic_year=classroom.academic_year,
+        ).exists()
+
+
+# ---------------------------------------------------------------------------
+# Permission mixins
+# ---------------------------------------------------------------------------
+class BlockDestructiveDeleteMixin:
+    """
+    Mix into any ViewSet whose destroy() cascades into fee, exam, or
+    enrollment history - deleting a StudentProfile, ClassRoom, Term,
+    AcademicYear, GradeLevel, or Subject can silently wipe invoices,
+    payments, exam results, or a student's whole record. This adds
+    IsSuperAdmin ON TOP of whatever permission the ViewSet already
+    enforces, and ONLY for the destroy action - list/create/update are
+    untouched.
+    """
+
+    def get_permissions(self):
+        perms = super().get_permissions()
+        if self.action == "destroy":
+            perms.append(IsSuperAdmin())
+        return perms
+
+
+# ---------------------------------------------------------------------------
+# Misc helpers
+# ---------------------------------------------------------------------------
+def get_current_term():
+    return models.Term.objects.filter(is_current=True).select_related("academic_year").first()
+
+
+def get_current_academic_year():
+    return models.AcademicYear.objects.filter(is_current=True).first()
+
+
+def teacher_allocated_classrooms(teacher, academic_year=None):
+    """Distinct (subject, classroom) pairs a teacher is allocated to."""
+    qs = models.TeacherSubjectAllocation.objects.filter(teacher=teacher).select_related(
+        "subject", "classroom", "classroom__grade_level", "classroom__stream"
+    )
+    if academic_year:
+        qs = qs.filter(academic_year=academic_year)
+    else:
+        qs = qs.filter(academic_year__is_current=True)
+    return qs
+
+
+def student_guardians(student_profile):
+    return [link.parent.user for link in models.ParentStudentLink.objects.filter(student=student_profile)]
+
+
+def teacher_can_message_student(user, student):
+    """
+    True if `user` (a TEACHER) is the class teacher of `student`'s current
+    classroom, or is allocated to teach a subject in it. Admin/Finance
+    bypass this check entirely (see ConversationCreateSerializer).
+    """
+    enrollment = student.current_enrollment
+    if not enrollment:
+        return False
+    classroom = enrollment.classroom
+    if classroom.class_teacher_id == user.id:
+        return True
+    return models.TeacherSubjectAllocation.objects.filter(teacher=user, classroom=classroom).exists()
+
+
+def get_client_ip(request):
+    xff = request.META.get("HTTP_X_FORWARDED_FOR")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.META.get("REMOTE_ADDR")
+
+
+def mask_contact(user):
+    """Never echo a full phone/email back in the OTP response."""
+    phone = (user.phone_number or "").strip()
+    if len(phone) >= 4:
+        return f"contact ending in {phone[-4:]}"
+    return "your registered contact"
+
+
+USERNAME_MAX_LENGTH = 30
+# letters, numbers, - _ . / only, 3-30 chars — rejects the "garbage string" case entirely
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._\-/]{3,30}$")
