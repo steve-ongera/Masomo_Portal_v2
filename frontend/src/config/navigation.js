@@ -58,15 +58,14 @@ const PROC_STORE = [
 
 // -----------------------------------------------------------------
 // CAFETERIA / MEALS sidebar group. Defined once and reused by the
-// ADMIN and CAFETERIA roles so a label or icon change happens in a
-// single place. Pages are /cafeteria and /meals/* in App.jsx and are
-// backed by the separate `meal_management` Django app. These mirror
-// the role lists in App.jsx:
+// ADMIN and CAFETERIA roles so a label or icon change
+// happens in a single place. Pages are /cafeteria and /meals/* in
+// App.jsx and are backed by the separate `meal_management` Django app.
+// These mirror the role lists in App.jsx:
 //   CAFETERIA_ROLES = ADMIN, SECRETARY, CAFETERIA   (scan desk)
 //   MEAL_OPERATE    = ADMIN, SECRETARY, CAFETERIA   (dashboard, cards, collections)
 //   MEAL_ADMIN      = ADMIN, SECRETARY              (plans, attendants)
 //   MEAL_BILLING    = ADMIN, SECRETARY, FINANCE     (cafeteria billing)
-// ADMIN is in every list above, so the whole group is open to Admin.
 // Items follow the daily routine: scan -> overview -> collections ->
 // cards -> setup (plans, attendants) -> billing.
 // -----------------------------------------------------------------
@@ -270,14 +269,17 @@ export const NAV_BY_ROLE = {
   ],
 
   // -----------------------------------------------------------------
-  // PRINCIPAL — oversight role: academics, staffing, results, reports.
-  // Reuses the same page components as ADMIN (via /principal/* routes
-  // in App.jsx) rather than duplicating pages — the Principal just gets
-  // a narrower, read/oversight-leaning slice of the same tools.
-  // Also the default approver for procurement requisitions / POs, and
-  // (with Admin) the approver of bursary / discount awards.
-  // Priority: approvals/oversight first, then academics, people,
-  // student ID, boarding, bursaries, reports, communication, procurement.
+  // PRINCIPAL — oversight role, deliberately kept to a short menu:
+  // students, teacher allocation, classes, subjects, calendar, grading
+  // scales, rankings, student ID & attendance, the core finance pages,
+  // bursaries & discounts and announcements. No procurement, cafeteria,
+  // boarding or system-admin pages.
+  // Reuses the same page components as ADMIN via /principal/* routes
+  // in App.jsx (same pattern as SECRETARY) rather than duplicating pages.
+  // Every /principal/* route here needs PRINCIPAL allowed on the matching
+  // backend endpoints too (IsAdmin -> IsAdminOrPrincipal, etc.).
+  // Priority: oversight -> people -> academics -> student ID -> finance
+  // -> bursaries -> communication -> account.
   // -----------------------------------------------------------------
   PRINCIPAL: [
     {
@@ -285,17 +287,6 @@ export const NAV_BY_ROLE = {
         { to: "/principal", icon: "bi-speedometer2", label: "Dashboard" },
         { to: "/messages", icon: "bi-chat-right-text", label: "Messages" },
         { to: "/notifications", icon: "bi-bell", label: "Notifications" },
-        { to: "/verify-gatepass", icon: "bi-shield-check", label: "Verify Gatepass" },
-      ],
-    },
-    {
-      label: "Academics",
-      items: [
-        { to: "/principal/classrooms", icon: "bi-door-open", label: "Classes & Streams" },
-        { to: "/principal/exams", icon: "bi-pencil-square", label: "Exams" },
-        { to: "/principal/rankings", icon: "bi-bar-chart-line", label: "Rankings" },
-        { to: "/principal/promotions", icon: "bi-arrow-up-circle", label: "Promotions" },
-        { to: "/principal/clearance", icon: "bi-patch-check", label: "Student Clearance" },
       ],
     },
     {
@@ -306,34 +297,38 @@ export const NAV_BY_ROLE = {
       ],
     },
     {
+      label: "Academics",
+      items: [
+        { to: "/principal/classrooms", icon: "bi-door-open", label: "Classes & Streams" },
+        { to: "/principal/subjects", icon: "bi-journal-bookmark", label: "Subjects" },
+        { to: "/principal/calendar", icon: "bi-calendar-week", label: "Academic Calendar" },
+        { to: "/principal/grading", icon: "bi-award", label: "Grading Scales" },
+        { to: "/principal/rankings", icon: "bi-bar-chart-line", label: "Rankings" },
+      ],
+    },
+    {
       label: "Student ID & Attendance",
       items: ID_FULL,
     },
     {
-      label: "Boarding",
-      items: BOARD_VIEW_ITEMS,
+      label: "Finance",
+      items: [
+        { to: "/principal/payments", icon: "bi-credit-card", label: "Payments" },
+        { to: "/principal/expenses", icon: "bi-wallet2", label: "Expenses" },
+        { to: "/principal/fees", icon: "bi-cash-coin", label: "Fee Structures" },
+        { to: "/principal/finance-reports/detailed", icon: "bi-table", label: "Student Balance & Reports" },
+        { to: "/principal/finance-reports/collections", icon: "bi-graph-up-arrow", label: "Collections Report" },
+        { to: "/principal/finance-reports/class-analysis", icon: "bi-bar-chart-steps", label: "Class Analysis" },
+      ],
     },
     {
       label: "Bursaries & Discounts",
-      items: BURSARY_VIEW_ITEMS,
-    },
-    {
-      label: "Reports",
-      items: [
-        { to: "/principal/reports", icon: "bi-graph-up", label: "Reports & Analytics" },
-      ],
+      items: BURSARY_VIEW_ITEMS, // principal approves awards; setup stays Admin/Finance
     },
     {
       label: "Communication",
       items: [
         { to: "/principal/communications", icon: "bi-megaphone", label: "Announcements" },
-      ],
-    },
-    {
-      label: "Procurement",
-      items: [
-        ...PROC_OVERSIGHT,
-        { to: "/procurement/audit", icon: "bi-journal-check", label: "Audit Trail" },
       ],
     },
     {

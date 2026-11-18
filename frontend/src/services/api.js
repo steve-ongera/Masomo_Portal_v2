@@ -840,6 +840,18 @@ export const otherPaymentsApi = {
   classrooms: () => api.get("/classrooms/all/"),
 };
 
+export const student360Api = {
+  overview: (id) => api.get(`/students/${id}/360/overview/`),
+  fees: (id) => api.get(`/students/${id}/360/fees/`),
+  academics: (id) => api.get(`/students/${id}/360/academics/`),
+  meals: (id) => api.get(`/students/${id}/360/meals/`),
+  library: (id) => api.get(`/students/${id}/360/library/`),
+  discipline: (id) => api.get(`/students/${id}/360/discipline/`),
+  addDiscipline: (id, payload) => api.post(`/students/${id}/360/discipline/`, payload),
+  account: (id) => api.get(`/students/${id}/360/account/`),
+  setActive: (id, payload) => api.post(`/students/${id}/360/account/`, payload),
+};
+
 
 
 export default api;

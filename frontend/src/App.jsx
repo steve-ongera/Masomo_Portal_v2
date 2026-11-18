@@ -60,7 +60,8 @@ const AdminFinanceClassAnalysis = lazy(() => import("./pages/admin/finance/Class
 const AdminFinanceDetailedReport = lazy(() => import("./pages/admin/finance/DetailedReport"));
 
 // principal — own dashboard only; everywhere else it reuses the Admin
-// page components above (imported once, mounted under /principal/*)
+// (and, for Invoices/Payments, the Finance) page components above,
+// imported once and mounted under /principal/*
 const PrincipalDashboard = lazy(() => import("./pages/principal/Dashboard"));
 
 // secretary — own dashboard only; everywhere else it reuses the Admin
@@ -73,7 +74,8 @@ const SecretaryDashboard = lazy(() => import("./pages/secretary/Dashboard"));
 const ExamOfficerDashboard = lazy(() => import("./pages/examofficer/Dashboard"));
 
 // grading scales + automatic promotion settings. Built once, mounted under
-// both /exam-officer/* and /admin/* (the API allows ADMIN and EXAM_OFFICER).
+// /exam-officer/*, /admin/* and /principal/* (the API allows ADMIN,
+// PRINCIPAL and EXAM_OFFICER).
 const GradingScales = lazy(() => import("./pages/examofficer/GradingScales"));
 const PromotionSettings = lazy(() => import("./pages/examofficer/PromotionSettings"));
 
@@ -199,9 +201,11 @@ const MealAttendants = lazy(() => import("./pages/meals/Attendants"));
 // student / parent: meal plan, QR card, meal wallet and M-Pesa top-up
 const MyMeals = lazy(() => import("./pages/shared/MyMeals"));
 
-const MEAL_OPERATE = ["ADMIN", "SECRETARY", "CAFETERIA"]; // dashboard, cards, collections
-const MEAL_ADMIN = ["ADMIN", "SECRETARY"]; // plans, attendants
-const MEAL_BILLING = ["ADMIN", "SECRETARY", "FINANCE"];
+// Mirror meal_management permissions. PRINCIPAL has the full cafeteria
+// module (same as ADMIN), so it is in every list below.
+const MEAL_OPERATE = ["ADMIN", "PRINCIPAL", "SECRETARY", "CAFETERIA"]; // dashboard, cards, collections
+const MEAL_ADMIN = ["ADMIN", "PRINCIPAL", "SECRETARY"]; // plans, attendants
+const MEAL_BILLING = ["ADMIN", "PRINCIPAL", "SECRETARY", "FINANCE"];
 
 // student ID cards, morning gate scan & ID lookup (backed by the separate
 // `idcards` Django app, mounted at /api/v1/student-id/)
@@ -282,9 +286,9 @@ const HELP_ROLES = [
   "EXAM_OFFICER", "HOSTEL_WARDEN",
 ];
 
-// Meal scan desk. The API itself also requires Admin / Secretary / an
-// active CAFETERIA user (or an explicitly added attendant).
-const CAFETERIA_ROLES = ["ADMIN", "SECRETARY", "CAFETERIA"];
+// Meal scan desk. The API itself also requires Admin / Principal /
+// Secretary / an active CAFETERIA user (or an explicitly added attendant).
+const CAFETERIA_ROLES = ["ADMIN", "PRINCIPAL", "SECRETARY", "CAFETERIA"];
 
 // Procurement access. These mirror procurement/permissions.py on the backend
 // (MANAGE / VIEW_ALL / REQUESTERS / STORE) so the UI never offers a page the
@@ -343,6 +347,7 @@ export default function App() {
             <Route path="/finance/fee-cards" element={<RoleSection role="FINANCE"><FeeUpdateCards /></RoleSection>} />
             <Route path="/secretary/fee-cards" element={<RoleSection role="SECRETARY"><FeeUpdateCards /></RoleSection>} />
             <Route path="/admin/fee-cards" element={<RoleSection role="ADMIN"><FeeUpdateCards /></RoleSection>} />
+            <Route path="/principal/fee-cards" element={<RoleSection role="PRINCIPAL"><FeeUpdateCards /></RoleSection>} />
 
             {/* STUDENT ID CARDS — shared /student-id/* pages. Roles mirror
                 idcards/views.py (ID_ISSUE / ID_SCAN / ID_LOOKUP above):
@@ -366,8 +371,8 @@ export default function App() {
               element={<Guarded roles={HELP_ROLES}><ContactDeveloper /></Guarded>}
             />
 
-            {/* CAFETERIA — meal scan desk. Admin and Secretary can open it
-                too (e.g. to cover a shift); see CAFETERIA_ROLES above. */}
+            {/* CAFETERIA — meal scan desk. Admin, Principal and Secretary can
+                open it too (e.g. to cover a shift); see CAFETERIA_ROLES above. */}
             <Route path="/cafeteria" element={<Guarded roles={CAFETERIA_ROLES}><CafeteriaScanDesk /></Guarded>} />
             <Route path="/meals" element={<Guarded roles={[...MEAL_OPERATE, ...CAFETERIA_ROLES]}><MealDashboard /></Guarded>} />
             <Route path="/meals/plans" element={<Guarded roles={[...MEAL_ADMIN, ...CAFETERIA_ROLES]}><MealPlans /></Guarded>} />
@@ -443,23 +448,57 @@ export default function App() {
             <Route path="/admin/finance-reports/detailed" element={<RoleSection role="ADMIN"><AdminFinanceDetailedReport /></RoleSection>} />
 
             {/* PRINCIPAL — own dashboard, plus the same Admin page
-                components reused for oversight (read-leaning: classes,
-                exams, rankings, promotion previews, calendar, clearance,
-                students, teacher allocation, reports, announcements).
-                Requires the backend permission_classes swaps in
-                08/09_*_patch.py so these endpoints actually let a
-                PRINCIPAL account through. */}
+                components reused under /principal/*, so the Principal has
+                nearly the same tools as Admin: academics (classes,
+                subjects, calendar, timetable, exams, mark entry, grading,
+                rankings, promotions, automatic promotion, clearance),
+                people (students, parents, teacher allocation), the full
+                Finance slice (payments, invoices, fee structures, fee
+                update cards, verify receipt, expenses, student balance
+                and the collections / class-analysis reports), reports,
+                announcements and letters.
+                NOT given to the Principal (system-owner only): User
+                Accounts, School Settings, Security Monitor, License,
+                Term Rollover, Boarding Settings, Bursary setup.
+                Requires the backend permission_classes to include
+                PRINCIPAL on every endpoint behind these pages
+                (IsAdmin -> IsAdminOrPrincipal, IsAdminOrFinance ->
+                IsAdminOrFinanceOrPrincipal, etc.), or the pages will
+                render but their API calls will 403. */}
             <Route path="/principal" element={<RoleSection role="PRINCIPAL"><PrincipalDashboard /></RoleSection>} />
-            <Route path="/principal/students" element={<RoleSection role="PRINCIPAL"><AdminStudents /></RoleSection>} />
+
+            {/* principal · academics */}
             <Route path="/principal/classrooms" element={<RoleSection role="PRINCIPAL"><AdminClassrooms /></RoleSection>} />
-            <Route path="/principal/teachers" element={<RoleSection role="PRINCIPAL"><AdminTeacherAllocation /></RoleSection>} />
+            <Route path="/principal/subjects" element={<RoleSection role="PRINCIPAL"><AdminSubjects /></RoleSection>} />
+            <Route path="/principal/calendar" element={<RoleSection role="PRINCIPAL"><AdminCalendar /></RoleSection>} />
+            <Route path="/principal/timetable" element={<RoleSection role="PRINCIPAL"><AdminTimetableManagement /></RoleSection>} />
             <Route path="/principal/exams" element={<RoleSection role="PRINCIPAL"><AdminExams /></RoleSection>} />
+            <Route path="/principal/mark-entry" element={<RoleSection role="PRINCIPAL"><AdminMarkEntry /></RoleSection>} />
+            <Route path="/principal/grading" element={<RoleSection role="PRINCIPAL"><GradingScales /></RoleSection>} />
             <Route path="/principal/rankings" element={<RoleSection role="PRINCIPAL"><AdminRankings /></RoleSection>} />
             <Route path="/principal/promotions" element={<RoleSection role="PRINCIPAL"><AdminPromotions /></RoleSection>} />
-            <Route path="/principal/reports" element={<RoleSection role="PRINCIPAL"><AdminReports /></RoleSection>} />
-            <Route path="/principal/calendar" element={<RoleSection role="PRINCIPAL"><AdminCalendar /></RoleSection>} />
+            <Route path="/principal/promotion-settings" element={<RoleSection role="PRINCIPAL"><PromotionSettings /></RoleSection>} />
             <Route path="/principal/clearance" element={<RoleSection role="PRINCIPAL"><AdminClearance /></RoleSection>} />
+
+            {/* principal · people */}
+            <Route path="/principal/students" element={<RoleSection role="PRINCIPAL"><AdminStudents /></RoleSection>} />
+            <Route path="/principal/parents" element={<RoleSection role="PRINCIPAL"><AdminParents /></RoleSection>} />
+            <Route path="/principal/teachers" element={<RoleSection role="PRINCIPAL"><AdminTeacherAllocation /></RoleSection>} />
+
+            {/* principal · finance */}
+            <Route path="/principal/payments" element={<RoleSection role="PRINCIPAL"><FinancePayments /></RoleSection>} />
+            <Route path="/principal/invoices" element={<RoleSection role="PRINCIPAL"><FinanceInvoices /></RoleSection>} />
+            <Route path="/principal/fees" element={<RoleSection role="PRINCIPAL"><AdminFees /></RoleSection>} />
+            <Route path="/principal/expenses" element={<RoleSection role="PRINCIPAL"><AdminExpenses /></RoleSection>} />
+            <Route path="/principal/verify-receipt" element={<RoleSection role="PRINCIPAL"><FinanceVerifyReceipt /></RoleSection>} />
+            <Route path="/principal/finance-reports/detailed" element={<RoleSection role="PRINCIPAL"><AdminFinanceDetailedReport /></RoleSection>} />
+            <Route path="/principal/finance-reports/collections" element={<RoleSection role="PRINCIPAL"><AdminFinanceCollections /></RoleSection>} />
+            <Route path="/principal/finance-reports/class-analysis" element={<RoleSection role="PRINCIPAL"><AdminFinanceClassAnalysis /></RoleSection>} />
+
+            {/* principal · reports & communication */}
+            <Route path="/principal/reports" element={<RoleSection role="PRINCIPAL"><AdminReports /></RoleSection>} />
             <Route path="/principal/communications" element={<RoleSection role="PRINCIPAL"><Communications /></RoleSection>} />
+            <Route path="/principal/letters" element={<RoleSection role="PRINCIPAL"><AdminLetters /></RoleSection>} />
 
             {/* SECRETARY — own dashboard, plus the front-office slice of
                 the Admin tools: admitting/managing student records,
@@ -479,7 +518,7 @@ export default function App() {
                 (see utils.py / views.py). The pages will render for a
                 SECRETARY account, but API calls will 403 until the
                 matching permission classes are widened to include
-                SECRETARY, the same way the PRINCIPAL patch above did. */}
+                SECRETARY, the same way the PRINCIPAL patch did. */}
             <Route path="/secretary" element={<RoleSection role="SECRETARY"><SecretaryDashboard /></RoleSection>} />
             <Route path="/secretary/students" element={<RoleSection role="SECRETARY"><AdminStudents /></RoleSection>} />
             <Route path="/secretary/parents" element={<RoleSection role="SECRETARY"><AdminParents /></RoleSection>} />
@@ -521,7 +560,7 @@ export default function App() {
                 subjects, teacher allocation, timetable management, students,
                 parents, clearance and letters. Grading Scales and Automatic
                 Promotion are the Exam Officer's own pages (also mounted for
-                ADMIN above).
+                ADMIN and PRINCIPAL above).
                 NOTE: the matching permission classes in utils.py must
                 include EXAM_OFFICER, or these pages will render but their
                 API calls will 403. */}

@@ -3,6 +3,7 @@ import { studentsApi, academicsApi, authApi, admissionFeeApi } from "../../servi
 import TableSkeleton from "../../components/TableSkeleton";
 import Pagination from "../../components/Pagination";
 import Modal from "../../components/Modal";
+import StudentProfileModal from "./StudentProfileModal";
 
 const emptyAddForm = {
   first_name: "", last_name: "", email: "", phone_number: "", national_id: "",
@@ -28,18 +29,6 @@ const emptyFilters = {
 };
 
 const kes = (n) => `KES ${Number(n).toLocaleString("en-KE", { maximumFractionDigits: 2 })}`;
-
-// One labelled row in the View modal (label left, value right)
-function Info({ label, value }) {
-  return (
-    <div className="col-12 col-md-6">
-      <div className="profile-info-row">
-        <span>{label}</span>
-        <span>{value}</span>
-      </div>
-    </div>
-  );
-}
 
 export default function AdminStudents() {
   const [students, setStudents] = useState([]);
@@ -98,10 +87,8 @@ export default function AdminStudents() {
     setFeeError("");
   };
 
-  // ---- View modal ----
-  const [showViewModal, setShowViewModal] = useState(false);
-  const [viewStudent, setViewStudent] = useState(null);
-  const [viewLoading, setViewLoading] = useState(false);
+  // ---- Student 360 profile modal (replaces the old View modal) ----
+  const [profileId, setProfileId] = useState(null);
 
   // ---- Edit modal ----
   const [showEditModal, setShowEditModal] = useState(false);
@@ -346,23 +333,6 @@ export default function AdminStudents() {
       setMessageType("danger");
     } finally {
       setAddSaving(false);
-    }
-  };
-
-  // ---------------- VIEW ----------------
-  const openView = async (student) => {
-    setShowViewModal(true);
-    setViewLoading(true);
-    setViewStudent(null);
-    try {
-      const { data } = await studentsApi.detail(student.id);
-      setViewStudent(data);
-    } catch (err) {
-      setMessage("Could not load student details.");
-      setMessageType("danger");
-      setShowViewModal(false);
-    } finally {
-      setViewLoading(false);
     }
   };
 
@@ -693,7 +663,7 @@ export default function AdminStudents() {
                     </td>
                     <td>
                       <div className="table-actions">
-                        <button className="btn btn-sm btn-outline-primary btn-icon" title="View" aria-label="View" onClick={() => openView(s)}>
+                        <button className="btn btn-sm btn-outline-primary btn-icon" title="View full profile" aria-label="View" onClick={() => setProfileId(s.id)}>
                           <i className="bi bi-eye"></i>
                         </button>
                         {canEditStudents && (
@@ -989,45 +959,14 @@ export default function AdminStudents() {
         </form>
       </Modal>
 
-      {/* ---------------- VIEW MODAL ---------------- */}
-      <Modal show={showViewModal} onClose={() => setShowViewModal(false)} title="Student Details">
-        {viewLoading || !viewStudent ? (
-          <div className="text-center py-4"><span className="spinner-border spinner-border-sm me-2"></span>Loading...</div>
-        ) : (
-          <div>
-            <h6 className="mb-2 fw-bold">{viewStudent.full_name}</h6>
-            <div className="row g-x-3">
-              <Info label="Admission No" value={viewStudent.admission_no} />
-              <Info label="Username" value={viewStudent.user.username} />
-              <Info label="Email" value={viewStudent.user.email || "-"} />
-              <Info label="Phone" value={viewStudent.user.phone_number || "-"} />
-              <Info label="National ID / Birth No" value={viewStudent.user.national_id || "-"} />
-              <Info label="Gender" value={viewStudent.gender === "M" ? "Male" : "Female"} />
-              <Info label="Date of Birth" value={viewStudent.date_of_birth || "-"} />
-              <Info label="Curriculum" value={viewStudent.curriculum_type} />
-              <Info label="UPI Number" value={viewStudent.upi_number || "-"} />
-              {/* current_classroom from StudentProfileDetailSerializer is an
-                  object ({id, label, grade_level_id, academic_year}), not a
-                  string - render .label instead of the object itself. */}
-              <Info label="Current Class" value={viewStudent.current_classroom?.label || "-"} />
-              <Info label="Date Admitted" value={viewStudent.date_admitted} />
-              <Info label="Status" value={viewStudent.is_active ? "Active" : "Inactive"} />
-            </div>
-
-            <h6 className="settings-section__title mt-4 mb-1">Parent / Guardian</h6>
-            {viewStudent.guardian ? (
-              <div className="row g-x-3">
-                <Info label="Name" value={viewStudent.guardian.name} />
-                <Info label="Relationship" value={viewStudent.guardian.relationship_display} />
-                <Info label="Phone" value={viewStudent.guardian.phone_number} />
-                <Info label="Email" value={viewStudent.guardian.email || "-"} />
-              </div>
-            ) : (
-              <p className="form-text-hint">No guardian linked.</p>
-            )}
-          </div>
-        )}
-      </Modal>
+      {/* ---------------- STUDENT 360 PROFILE MODAL ---------------- */}
+      <StudentProfileModal
+        show={profileId !== null}
+        studentId={profileId}
+        onClose={() => setProfileId(null)}
+        onChanged={loadStudents}
+        isAdmin={currentUserRole === "ADMIN"}
+      />
 
       {/* ---------------- EDIT MODAL ---------------- */}
       <Modal show={showEditModal} onClose={() => setShowEditModal(false)} title="Edit Student & Account" size="lg">

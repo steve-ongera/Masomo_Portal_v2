@@ -75,6 +75,7 @@ INSTALLED_APPS = [
     "bursaries",
     "boarding",
     "idcards",
+    "student360",
 
     # SaaS plan / feature access (must come after "api": it references api models)
     "entitlements",
