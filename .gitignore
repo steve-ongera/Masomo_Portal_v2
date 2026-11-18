@@ -1,0 +1,23 @@
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Environment and database
+.env
+.env.*
+!.env.example
+backend/db.sqlite3
+
+# Private school data
+backend/media/
+backend/private_media/
+backend/logs/
+
+# Generated files
+backend/staticfiles/
+frontend/node_modules/
+
+# Missing Git LFS videos
+frontend/src/assets/videos/default.mp4
+frontend/src/assets/videos/login.mp4
