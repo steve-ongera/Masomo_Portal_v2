@@ -1,21 +1,15 @@
 /* ==========================================================================
-   MAIN.CSS — Masomo Portal / School ERP Design System  (v5 — light shell)
+   MAIN.CSS — Masomo Portal / School ERP Design System  (v6 — new login)
    Built on Bootstrap 5 + Bootstrap Icons.
 
-   What changed vs v4 (ALL existing class names are preserved, so inner pages
-   keep working and pick up the new look automatically):
-   - New look: light sidebar, clean white navbar, indigo-blue primary,
-     rounded cards, quiet table headers, pill status badges, square pagination.
-   - The --blue-* tokens are re-mapped to the new indigo palette, so any page
-     using var(--blue-700) etc. follows the redesign too.
-   - Sidebar: light surface, active item = tinted pill, groups are dropdowns
-     with a tree line (Database > Students look). Footer is left aligned.
-   - Navbar: breadcrumbs left, page search centred, icon buttons + profile right.
-   - NEW page-pattern classes (section 33): .page-header__lead / __icon,
-     .page-tabs, .page-card, .search-bar, .person-card, .option-card,
-     .panel--tint, .row-actions, .status-pill, .chip, .modal-steps,
-     .upload-drop, .detail-grid. Used by components/PageTemplate.jsx.
-   - Same responsive root scale (compact 80% look on laptops) and touch rules.
+   What changed vs v5:
+   - Section 14 (LOGIN PAGE) fully redesigned: split layout with a brand
+     panel (logo, school name, portal name) and a clean form panel.
+     All colours come from the existing --blue-* tokens, so the school
+     theme is unchanged. New classes are prefixed .np-login / .np-field /
+     .np-btn and replace the old .login-page / .login-card rules.
+   - Everything else is identical to v5; all existing class names are kept.
+
    Keep in index.html <head>:
      <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
    ========================================================================== */
@@ -1480,34 +1474,216 @@ textarea.form-control { min-height: 5rem; line-height: var(--lh-normal); }
 .modal-icon-circle--info { background: var(--blue-100); color: var(--blue-600); }
 
 /* ==========================================================================
-   14. LOGIN PAGE (flat)
+   14. LOGIN PAGE  (split layout: brand panel + form panel)
+   Colours come from the --blue-* tokens, so the school theme is unchanged.
+   Sizes are in rem and follow the root scale in section 2.
    ========================================================================== */
-.login-page {
+.np-login {
+  --np-primary: var(--blue-600);
+  --np-primary-dark: var(--blue-800);
+  --np-primary-deep: var(--blue-900);
+  --np-primary-light: var(--blue-500);
+
   min-height: 100vh;
   min-height: 100dvh;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-app);
-  padding: 1rem;
+  padding: 1.5rem;
+  background:
+    radial-gradient(60% 60% at 0% 100%, var(--blue-100) 0%, transparent 70%),
+    radial-gradient(60% 60% at 100% 0%, var(--blue-50) 0%, transparent 70%),
+    var(--bg-app);
 }
-.login-card {
-  background: var(--surface);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-md);
-  padding: 2rem;
-  width: 100%;
-  max-width: 25rem;
-}
-.login-card__brand { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; }
-.login-card__brand i { font-size: 1.6rem; color: var(--blue-600); }
-.login-card__brand h1 { font-size: var(--fs-xl); font-weight: 700; color: var(--ink-900); margin: 0; font-family: var(--font-display); }
-.login-card__subtitle { color: var(--ink-600); margin-bottom: 1.4rem; font-size: var(--fs-sm); }
-.login-card .form-label { color: var(--ink-700); }
-.login-card__footer { text-align: center; margin-top: 1.1rem; font-size: var(--fs-xs); color: var(--ink-400); }
 
-.login-side-panel { display: none !important; flex: 1; color: #fff; padding: 2.5rem; }
+/* ---------- Shell ---------- */
+.np-login__shell {
+  width: 100%;
+  max-width: 68rem;
+  min-height: 41rem;
+  display: grid;
+  grid-template-columns: 5fr 7fr;
+  background: var(--surface);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  box-shadow: var(--shadow-xl);
+}
+
+/* ---------- Brand panel ---------- */
+.np-login__brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 2rem;
+  color: #fff;
+  text-align: center;
+  background: linear-gradient(160deg, var(--np-primary-light) 0%, var(--np-primary-dark) 55%, var(--np-primary-deep) 100%);
+  overflow: hidden;
+}
+.np-login__orb { position: absolute; border-radius: 50%; background: rgba(255, 255, 255, 0.09); pointer-events: none; }
+.np-login__orb--top { width: 19rem; height: 19rem; top: -7.5rem; left: -6rem; }
+.np-login__orb--bottom { width: 22rem; height: 22rem; bottom: -10rem; right: -7.5rem; background: rgba(255, 255, 255, 0.07); }
+
+.np-login__brand-inner { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; }
+
+.np-login__logo {
+  width: 13.5rem;
+  height: 13.5rem;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
+  margin-bottom: 1.75rem;
+}
+.np-login__logo img { width: 9.25rem; height: 9.25rem; object-fit: contain; }
+
+.np-login__school { margin: 0; font-size: 1.9rem; font-weight: 700; line-height: 1.25; color: #fff; letter-spacing: 0; }
+.np-login__portal { margin: 0.6rem 0 0; font-size: 1.1rem; font-weight: 500; color: rgba(255, 255, 255, 0.82); }
+
+/* ---------- Form panel ---------- */
+.np-login__panel { display: flex; align-items: center; padding: 3rem 3.5rem; }
+.np-login__panel-inner { width: 100%; max-width: 29rem; margin: 0 auto; }
+
+.np-login__header h2 { margin: 0 0 0.4rem; font-size: 2.1rem; font-weight: 700; color: var(--ink-900); letter-spacing: -0.015em; line-height: 1.2; }
+.np-login__header p { margin: 0 0 1.9rem; font-size: 1.1rem; color: var(--ink-500); }
+
+.np-login__alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 1.25rem;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  color: #c2272d;
+  background: var(--danger-100);
+  border: 1px solid #f4c6c8;
+  border-radius: var(--radius-lg);
+}
+.np-login__alert i { margin-top: 0.1rem; }
+
+.np-login__hint { margin: 0 0 1.25rem; font-size: 1rem; line-height: 1.5; color: var(--ink-500); }
+
+/* ---------- Fields ---------- */
+.np-field { margin-bottom: 1.35rem; }
+.np-field__label { display: block; margin-bottom: 0.5rem; font-size: 1.05rem; font-weight: 600; color: var(--ink-900); }
+.np-field__control { position: relative; }
+.np-field__icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); font-size: 1.15rem; color: var(--blue-600); pointer-events: none; }
+.np-field__input {
+  width: 100%;
+  height: 3.6rem;
+  padding: 0 1rem 0 3rem;
+  font-family: inherit;
+  font-size: 1.1rem;
+  color: var(--ink-900);
+  background: var(--surface-2);
+  border: 1px solid var(--border-color-strong);
+  border-radius: var(--radius-lg);
+  outline: none;
+  transition: border-color var(--duration-base) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), background var(--duration-base) var(--ease-standard);
+}
+.np-field__input::placeholder { color: var(--ink-400); }
+.np-field__input:hover { border-color: var(--ink-400); }
+.np-field__input:focus { background: var(--surface); border-color: var(--blue-500); box-shadow: var(--shadow-focus); outline: none; }
+.np-field__input--toggle { padding-right: 3.4rem; }
+.np-field__input--otp {
+  padding: 0 1rem;
+  height: 4rem;
+  text-align: center;
+  font-size: 1.7rem;
+  letter-spacing: 0.4em;
+  font-family: var(--font-mono);
+}
+
+.np-field__toggle {
+  position: absolute;
+  right: 0.45rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2.7rem;
+  height: 2.7rem;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  color: var(--ink-400);
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: background var(--duration-fast) ease, color var(--duration-fast) ease;
+}
+.np-field__toggle:hover { background: var(--blue-50); color: var(--blue-600); }
+
+/* ---------- Buttons ---------- */
+.np-btn {
+  width: 100%;
+  height: 3.6rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+  font-family: inherit;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(100deg, var(--blue-500) 0%, var(--blue-700) 50%, var(--blue-800) 100%);
+  border: 0;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  box-shadow: 0 10px 22px -8px rgba(61, 79, 239, 0.55);
+  transition: transform var(--duration-fast) var(--ease-standard), box-shadow var(--duration-base) var(--ease-standard), filter var(--duration-base) ease;
+}
+.np-btn:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.05); box-shadow: 0 14px 26px -8px rgba(61, 79, 239, 0.6); }
+.np-btn:active:not(:disabled) { transform: translateY(0); }
+.np-btn:focus-visible { outline: 3px solid rgba(61, 79, 239, 0.35); outline-offset: 2px; }
+.np-btn:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; }
+.np-btn__spinner { width: 1.15rem; height: 1.15rem; border: 2px solid rgba(255, 255, 255, 0.4); border-top-color: #fff; border-radius: 50%; animation: btn-spin 0.7s linear infinite; }
+
+.np-btn-text {
+  width: 100%;
+  margin-top: 0.9rem;
+  padding: 0.7rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--blue-600);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--duration-fast) ease;
+}
+.np-btn-text:hover { background: var(--blue-50); }
+
+/* ---------- Links & footer ---------- */
+.np-login__links { display: flex; justify-content: center; margin-top: 1.6rem; padding-top: 1.4rem; border-top: 1px solid var(--border-color); }
+.np-login__link { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 1rem; font-weight: 600; color: var(--blue-600); text-decoration: none; }
+.np-login__link:hover { color: var(--blue-700); text-decoration: underline; }
+
+.np-login__footer { margin-top: 2.25rem; text-align: center; font-size: 0.9rem; line-height: 1.6; color: var(--ink-400); }
+.np-login__footer a { font-weight: 600; color: var(--blue-600); text-decoration: none; }
+.np-login__footer a:hover { text-decoration: underline; }
+
+/* ---------- Login responsive ---------- */
+@media (max-width: 860px) {
+  .np-login { padding: 0; align-items: stretch; }
+  .np-login__shell { grid-template-columns: 1fr; max-width: 34rem; min-height: 100vh; min-height: 100dvh; border-radius: 0; box-shadow: none; margin: 0 auto; }
+  .np-login__brand { padding: 2rem 1.5rem 1.75rem; }
+  .np-login__logo { width: 7rem; height: 7rem; margin-bottom: 1rem; }
+  .np-login__logo img { width: 5.5rem; height: 5.5rem; }
+  .np-login__school { font-size: 1.4rem; }
+  .np-login__portal { margin-top: 0.25rem; font-size: 0.95rem; }
+  .np-login__panel { padding: 2rem 1.5rem 1.75rem; align-items: flex-start; }
+  .np-login__header h2 { font-size: 1.7rem; }
+  .np-login__header p { font-size: 1rem; }
+}
 
 /* ==========================================================================
    15. CHARTS / GRAPHS / REPORTS
@@ -2328,7 +2504,6 @@ a.contact-detail-value:hover { color: var(--blue-600); }
   .table--stack tbody td:last-child { border-bottom: none; }
   .table--stack tbody td::before { content: attr(data-label); font-weight: 600; color: var(--ink-400); font-size: var(--fs-xs); text-align: left; }
 
-  .login-card { padding: 1.5rem 1.25rem; border-radius: var(--radius-lg); }
   .btn-fab { bottom: calc(0.9rem + var(--safe-bottom)); right: calc(0.9rem + var(--safe-right)); width: 2.9rem; height: 2.9rem; font-size: 1.15rem; }
   .verify-card { padding: 1.1rem; }
   .manual-video-grid { grid-template-columns: 1fr; }
@@ -2365,7 +2540,7 @@ a.contact-detail-value:hover { color: var(--blue-600); }
   .form-control, .form-select, .toolbar__filter { min-height: 2.75rem; }
   .form-control-sm, .form-select-sm { min-height: 2.4rem; }
   .form-control, .form-select, .tag-input input, .toolbar__filter select,
-  .app-navbar__search input { font-size: 16px; }
+  .app-navbar__search input, .np-field__input { font-size: 16px; }
 
   .card--interactive:hover, .video-card:hover { transform: none; }
 }

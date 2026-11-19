@@ -1,4 +1,10 @@
 // src/components/Modal.jsx
+//
+// Same props and behaviour as before (drag by the title bar, Esc-less backdrop
+// close, fullscreen, sizes, footer). Two OPTIONAL props were added for the new
+// design and are ignored by existing callers:
+//   icon     - a Bootstrap icon class, e.g. "bi-mortarboard"
+//   subtitle - small grey line under the title
 import { useEffect, useRef, useState } from "react";
 
 // true  = must double-press (press, release, press again and hold) on the title bar
@@ -16,6 +22,8 @@ export default function Modal({
   show,
   onClose,
   title,
+  subtitle,
+  icon,
   children,
   size,
   footer,
@@ -53,7 +61,7 @@ export default function Modal({
   const onHeaderPointerDown = (e) => {
     if (isFullscreen) return;
     if (e.pointerType === "mouse" && e.button !== 0) return;
-    if (e.target.closest(".btn-close")) return;
+    if (e.target.closest("button")) return;
 
     const now = Date.now();
     const last = lastPress.current;
@@ -112,6 +120,16 @@ export default function Modal({
     }, 100);
   };
 
+  const maxWidth = isFullscreen
+    ? "100vw"
+    : size === "sm"
+    ? "400px"
+    : size === "lg"
+    ? "800px"
+    : size === "xl"
+    ? "1000px"
+    : "560px";
+
   return (
     <>
       <div
@@ -123,7 +141,7 @@ export default function Modal({
           left: 0,
           width: "100%",
           height: "100%",
-          backgroundColor: "rgba(11, 37, 69, 0.55)",
+          backgroundColor: "rgba(17, 22, 51, 0.5)",
           zIndex: 1040,
           backdropFilter: "blur(2px)",
         }}
@@ -155,15 +173,7 @@ export default function Modal({
             alignItems: isFullscreen ? "stretch" : "center",
             minHeight: isFullscreen ? "100vh" : "calc(100% - 1rem)",
             margin: isFullscreen ? 0 : "0.5rem auto",
-            maxWidth: isFullscreen
-              ? "100vw"
-              : size === "sm"
-              ? "400px"
-              : size === "lg"
-              ? "800px"
-              : size === "xl"
-              ? "1000px"
-              : "560px",
+            maxWidth,
             width: "100%",
           }}
           onClick={(e) => e.stopPropagation()}
@@ -179,17 +189,15 @@ export default function Modal({
               height: isFullscreen ? "100vh" : undefined,
               pointerEvents: "auto",
               backgroundColor: "#ffffff",
-              backgroundClip: "padding-box",
-              border: isFullscreen ? "none" : "1px solid var(--border-color)",
-              borderRadius: isFullscreen ? 0 : "var(--radius-lg)",
-              boxShadow: isFullscreen ? "none" : "0 20px 60px rgba(11, 37, 69, 0.15)",
+              borderRadius: isFullscreen ? 0 : undefined,
+              boxShadow: isFullscreen ? "none" : undefined,
               outline: 0,
               maxHeight: isFullscreen ? "100vh" : "calc(100vh - 1rem)",
               transform: pos.x || pos.y ? `translate(${pos.x}px, ${pos.y}px)` : undefined,
               willChange: dragging ? "transform" : undefined,
             }}
           >
-            {/* Modal Header — double-click and hold here, then drag to move */}
+            {/* Header: optional icon + title + subtitle + close. Drag here to move. */}
             <div
               className="modal-header"
               title={isFullscreen ? undefined : "Drag to move"}
@@ -198,68 +206,39 @@ export default function Modal({
               onPointerUp={endDrag}
               onPointerCancel={endDrag}
               style={{
-                display: "flex",
                 flexShrink: 0,
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "1rem 1.5rem",
-                borderBottom: "1px solid var(--border-color)",
-                borderTopLeftRadius: isFullscreen ? 0 : "var(--radius-lg)",
-                borderTopRightRadius: isFullscreen ? 0 : "var(--radius-lg)",
-                backgroundColor: "var(--bg-app)",
+                backgroundColor: "#ffffff",
                 userSelect: "none",
                 WebkitUserSelect: "none",
                 touchAction: isFullscreen ? undefined : "none",
                 cursor: dragging ? "grabbing" : "default",
               }}
             >
-              <h5
-                className="modal-title"
-                style={{
-                  margin: 0,
-                  fontFamily: "var(--font-display)",
-                  fontWeight: 700,
-                  fontSize: "var(--fs-md)",
-                  color: "var(--ink-900)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.5rem",
-                }}
-              >
-                {title}
-              </h5>
+              {icon && (
+                <span className="modal-header__icon" aria-hidden="true">
+                  <i className={`bi ${icon.startsWith("bi-") ? icon : `bi-${icon}`}`}></i>
+                </span>
+              )}
+              <div className="modal-header__text">
+                <h5 className="modal-title">{title}</h5>
+                {subtitle && <p className="modal-subtitle">{subtitle}</p>}
+              </div>
               <button
                 type="button"
-                className="btn-close"
+                className="btn btn-icon btn-light"
                 onClick={onClose}
                 aria-label="Close"
-                style={{
-                  padding: "0.5rem",
-                  margin: "-0.5rem -0.5rem -0.5rem auto",
-                  backgroundColor: "transparent",
-                  border: 0,
-                  borderRadius: "var(--radius-sm)",
-                  opacity: 0.5,
-                  cursor: "pointer",
-                  fontSize: "1.2rem",
-                  lineHeight: 1,
-                  color: "var(--ink-600)",
-                  transition: "opacity 0.15s ease",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.opacity = 1)}
-                onMouseLeave={(e) => (e.currentTarget.style.opacity = 0.5)}
               >
                 <i className="bi bi-x-lg"></i>
               </button>
             </div>
 
-            {/* Modal Body */}
+            {/* Body: the only part that scrolls */}
             <div
               className="modal-body"
               style={{
                 position: "relative",
                 flex: "1 1 auto",
-                padding: "1.5rem",
                 overflowY: "auto",
                 color: "var(--ink-700)",
                 fontSize: "var(--fs-base)",
@@ -269,23 +248,11 @@ export default function Modal({
               {children}
             </div>
 
-            {/* Modal Footer (optional) */}
+            {/* Footer (optional) */}
             {footer && (
               <div
                 className="modal-footer"
-                style={{
-                  display: "flex",
-                  flexShrink: 0,
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                  justifyContent: "flex-end",
-                  padding: "0.75rem 1.5rem",
-                  borderTop: "1px solid var(--border-color)",
-                  borderBottomLeftRadius: isFullscreen ? 0 : "var(--radius-lg)",
-                  borderBottomRightRadius: isFullscreen ? 0 : "var(--radius-lg)",
-                  backgroundColor: "var(--bg-app)",
-                  gap: "0.5rem",
-                }}
+                style={{ flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}
               >
                 {footer}
               </div>

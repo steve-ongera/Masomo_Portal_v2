@@ -6,14 +6,30 @@ const fmtDate = (d) => (d ? new Date(d).toLocaleDateString("en-KE", { day: "2-di
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const errText = (e, fallback) => e?.response?.data?.detail || fallback;
 
+// Display only: "15 Jan 2009 (Age 16)"
+const ageOf = (d) => {
+  if (!d) return null;
+  const b = new Date(d);
+  if (Number.isNaN(b.getTime())) return null;
+  const now = new Date();
+  let a = now.getFullYear() - b.getFullYear();
+  if (now.getMonth() < b.getMonth() || (now.getMonth() === b.getMonth() && now.getDate() < b.getDate())) a -= 1;
+  return a >= 0 ? a : null;
+};
+const dobText = (d) => {
+  if (!d) return "-";
+  const a = ageOf(d);
+  return a === null ? fmtDate(d) : `${fmtDate(d)} (Age ${a})`;
+};
+
 const TABS = [
-  ["overview", "Profile", "bi-person-fill"],
+  ["overview", "Personal Info", "bi-person"],
   ["fees", "Fees", "bi-cash-coin"],
   ["academics", "Marks", "bi-journal-check"],
-  ["discipline", "Discipline", "bi-exclamation-triangle-fill"],
-  ["meals", "Meals", "bi-cup-hot-fill"],
-  ["library", "Library", "bi-book-fill"],
-  ["account", "Account", "bi-gear-fill"],
+  ["discipline", "Discipline", "bi-exclamation-triangle"],
+  ["meals", "Meals", "bi-cup-hot"],
+  ["library", "Library", "bi-book"],
+  ["account", "Account", "bi-gear"],
 ];
 
 const CATEGORIES = [
@@ -37,116 +53,125 @@ const todayISO = () => new Date().toISOString().slice(0, 10);
 // app's responsive root scale instead of using fixed pixels.
 // ---------------------------------------------------------------------------
 const CSS = `
-.sp-overlay{position:fixed;inset:0;z-index:2000;background:rgba(15,23,42,.45);backdrop-filter:blur(4px);
+.sp-overlay{position:fixed;inset:0;z-index:2000;background:rgba(17,22,51,.5);backdrop-filter:blur(3px);
   display:flex;align-items:center;justify-content:center;padding:1rem}
-.sp-card{width:100%;max-width:56rem;height:min(46rem,92vh);display:flex;flex-direction:column;overflow:hidden;
-  background:var(--surface,#fff);color:var(--ink-900,#0f172a);border-radius:1.1rem;
+.sp-card{width:100%;max-width:64rem;height:min(46rem,92vh);display:flex;flex-direction:column;overflow:hidden;
+  background:var(--surface,#fff);color:var(--ink-900);border-radius:var(--radius-xl);
   box-shadow:var(--shadow-xl);border:1px solid var(--border-color)}
 
-/* banner: slimmer, just enough for the avatar to overlap */
-.sp-banner{position:relative;height:4.5rem;flex:0 0 auto;overflow:hidden;
-  background:linear-gradient(180deg,#8fb0e6 0%,#c9d8f0 100%)}
-.sp-banner svg{position:absolute;inset:0;width:100%;height:100%}
-.sp-close{position:absolute;top:.6rem;right:.6rem;width:2rem;height:2rem;border-radius:50%;border:0;background:#fff;
-  color:var(--ink-900);font-size:.85rem;display:flex;align-items:center;justify-content:center;
-  box-shadow:var(--shadow-sm);cursor:pointer}
-.sp-close:hover{background:var(--blue-50);color:var(--blue-700)}
-
-/* drag handles (banner + header) */
+/* title bar (drag handle) */
 .sp-drag{cursor:grab;touch-action:none;user-select:none}
 .sp-drag:active{cursor:grabbing}
 @media (max-width:700px){.sp-drag{cursor:default;touch-action:auto}}
+.sp-top{flex:0 0 auto;display:flex;align-items:center;gap:.85rem;padding:1.1rem 1.3rem;
+  border-bottom:1px solid var(--border-color)}
+.sp-top__icon{font-size:1.7rem;color:var(--blue-600);line-height:1;flex-shrink:0}
+.sp-top__text{flex:1;min-width:0}
+.sp-top__title{margin:0;font-size:var(--fs-lg);font-weight:700;letter-spacing:-.01em;line-height:1.25}
+.sp-top__sub{margin:.1rem 0 0;font-size:var(--fs-sm);color:var(--ink-500)}
+.sp-close{width:2.1rem;height:2.1rem;border-radius:var(--radius-md);border:0;background:transparent;
+  color:var(--ink-600);font-size:1rem;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0}
+.sp-close:hover{background:var(--bg-app);color:var(--ink-900)}
 
-/* header */
-.sp-head{flex:0 0 auto;display:flex;gap:1rem;padding:0 1.25rem;align-items:flex-start}
-.sp-avatar-wrap{position:relative;flex:0 0 auto;margin-top:-2.4rem}
-.sp-avatar{width:5.5rem;height:5.5rem;border-radius:50%;border:4px solid var(--surface,#fff);object-fit:cover;
-  background:var(--blue-100);display:flex;align-items:center;justify-content:center;font-size:1.5rem;font-weight:700;
-  color:var(--blue-700);box-shadow:var(--shadow-md)}
-.sp-camera{position:absolute;right:0;bottom:.2rem;width:1.75rem;height:1.75rem;border-radius:50%;
-  border:2px solid var(--surface,#fff);background:var(--blue-700);color:#fff;display:flex;align-items:center;
-  justify-content:center;cursor:pointer;font-size:.75rem;padding:0}
+/* two columns: profile card | tabs + content */
+.sp-main{flex:1 1 auto;min-height:0;display:flex;gap:1.25rem;padding:1.1rem 1.3rem 1.3rem}
+
+/* left profile card */
+.sp-side{position:relative;flex:0 0 16rem;display:flex;flex-direction:column;align-items:stretch;
+  background:var(--blue-50);border:1px solid var(--blue-100);border-radius:var(--radius-lg);
+  padding:1.25rem 1.1rem;overflow-y:auto;text-align:center}
+.sp-status{position:absolute;top:.8rem;right:.8rem;display:inline-flex;align-items:center;gap:.35rem;
+  padding:.2rem .6rem;border-radius:var(--radius-md);font-weight:600;font-size:var(--fs-xs)}
+.sp-status--on{background:var(--success-100);color:#15803d}
+.sp-status--off{background:var(--danger-100);color:#c2272d}
+.sp-dot{width:.45rem;height:.45rem;border-radius:50%;background:currentColor}
+.sp-avatar-wrap{position:relative;align-self:center;margin:1.4rem 0 .8rem}
+.sp-avatar{width:7rem;height:7rem;border-radius:50%;border:4px solid #fff;object-fit:cover;background:var(--blue-100);
+  display:flex;align-items:center;justify-content:center;font-size:2rem;font-weight:700;color:var(--blue-600);
+  box-shadow:var(--shadow-md)}
+.sp-camera{position:absolute;right:.1rem;bottom:.2rem;width:1.9rem;height:1.9rem;border-radius:50%;
+  border:2px solid #fff;background:var(--blue-600);color:#fff;display:flex;align-items:center;
+  justify-content:center;cursor:pointer;font-size:.8rem;padding:0}
+.sp-camera:hover{background:var(--blue-700)}
 .sp-camera[disabled]{opacity:.6;cursor:wait}
-.sp-who{padding-top:.55rem;min-width:0}
-.sp-name{margin:0;font-size:var(--fs-xl);font-weight:700;letter-spacing:-.02em;line-height:1.15}
-.sp-sub{color:var(--ink-500);font-size:var(--fs-sm);margin-top:.1rem}
-.sp-chips{display:flex;flex-wrap:wrap;align-items:center;gap:.35rem .9rem;margin-top:.5rem;font-size:var(--fs-xs)}
-.sp-chip{display:inline-flex;align-items:center;gap:.35rem;color:var(--ink-700)}
-.sp-chip i{color:var(--ink-500);font-size:.85rem}
+.sp-side__name{margin:0;font-size:var(--fs-xl);font-weight:700;letter-spacing:-.02em;line-height:1.2}
+.sp-side__adm{margin-top:.15rem;color:var(--ink-600);font-size:var(--fs-base)}
+.sp-side__list{margin:1rem 0 0;padding:.9rem 0 0;border-top:1px solid var(--blue-100);list-style:none;
+  display:flex;flex-direction:column;gap:.7rem;text-align:left}
+.sp-side__row{display:flex;gap:.65rem;align-items:flex-start;min-width:0}
+.sp-side__row>i{font-size:1rem;color:var(--blue-600);width:1.2rem;text-align:center;margin-top:.1rem}
+.sp-side__l{display:block;font-size:var(--fs-xs);color:var(--ink-500);line-height:1.2}
+.sp-side__v{display:block;font-size:var(--fs-base);font-weight:500;overflow-wrap:anywhere;line-height:1.3}
+.sp-side__actions{margin-top:1.1rem;display:flex;flex-direction:column;gap:.5rem}
+.sp-btn{display:inline-flex;align-items:center;justify-content:center;gap:.45rem;border-radius:var(--radius-md);
+  padding:.55rem 1rem;font-size:var(--fs-sm);font-weight:600;cursor:pointer;border:1px solid var(--border-color-strong);
+  background:var(--surface);color:var(--ink-900)}
+.sp-btn:hover{background:var(--bg-app)}
+.sp-btn--primary{background:var(--blue-600);border-color:var(--blue-600);color:#fff;box-shadow:var(--shadow-xs)}
+.sp-btn--primary:hover{background:var(--blue-700);border-color:var(--blue-700)}
+
+/* right: tabs + body */
+.sp-content{flex:1 1 auto;min-width:0;min-height:0;display:flex;flex-direction:column}
+.sp-tabs{flex:0 0 auto;display:flex;gap:.2rem;border-bottom:1px solid var(--border-color);
+  overflow-x:auto;scrollbar-width:none;background:var(--surface)}
+.sp-tabs::-webkit-scrollbar{display:none}
+.sp-tab{display:inline-flex;align-items:center;gap:.45rem;white-space:nowrap;background:none;border:0;
+  padding:.6rem .85rem;font-size:var(--fs-sm);font-weight:600;color:var(--ink-500);
+  border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer}
+.sp-tab i{font-size:.95rem}
+.sp-tab:hover{color:var(--blue-600)}
+.sp-tab.is-active{color:var(--blue-600);border-bottom-color:var(--blue-600)}
+
+/* body = the only scrolling area */
+.sp-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:1.1rem .25rem .25rem 0}
+
+/* label / value list */
+.sp-dl{display:grid;grid-template-columns:11rem minmax(0,1fr);gap:.7rem 1rem;margin:0;font-size:var(--fs-base)}
+.sp-dl dt{color:var(--ink-500);font-weight:400}
+.sp-dl dd{margin:0;color:var(--ink-900);font-weight:500;overflow-wrap:anywhere}
+.sp-chip{display:inline-flex;align-items:center;padding:.2rem .6rem;border-radius:var(--radius-md);
+  background:var(--blue-100);color:var(--blue-700);font-size:var(--fs-xs);font-weight:600}
 .sp-pill{display:inline-flex;align-items:center;gap:.35rem;padding:.2rem .6rem;border-radius:var(--radius-md);
   font-weight:600;font-size:var(--fs-xs)}
-.sp-pill--on{background:var(--success-100);color:var(--success-600)}
-.sp-pill--off{background:var(--danger-100);color:var(--danger-600)}
-.sp-dot{width:.45rem;height:.45rem;border-radius:50%;background:currentColor}
-.sp-sep{width:1px;height:1rem;background:var(--border-color-strong)}
-
-/* tabs */
-.sp-tabs{flex:0 0 auto;display:flex;gap:.2rem;margin:.75rem 1.25rem 0;border-bottom:1px solid var(--border-color);
-  overflow-x:auto;scrollbar-width:none}
-.sp-tabs::-webkit-scrollbar{display:none}
-.sp-tab{display:inline-flex;align-items:center;gap:.4rem;white-space:nowrap;background:none;border:0;
-  padding:.55rem .8rem;font-size:var(--fs-sm);font-weight:600;color:var(--ink-500);
-  border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer}
-.sp-tab i{font-size:.9rem}
-.sp-tab:hover{color:var(--blue-700)}
-.sp-tab.is-active{color:var(--blue-700);border-bottom-color:var(--blue-700)}
-
-/* body = the only scrolling area, and it gets all the spare height */
-.sp-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:1rem 1.25rem .75rem}
-.sp-grid{display:grid;grid-template-columns:1fr 1fr;gap:.85rem 2rem}
-.sp-row{display:flex;gap:.7rem;align-items:flex-start;min-width:0}
-.sp-row>i{font-size:1rem;color:var(--ink-500);width:1.25rem;text-align:center;margin-top:.15rem}
-.sp-row__l{color:var(--ink-500);font-size:var(--fs-xs);line-height:1.2}
-.sp-row__v{font-size:var(--fs-base);font-weight:500;overflow-wrap:anywhere;line-height:1.3}
-.sp-about{display:flex;gap:.8rem;background:var(--blue-50);border:1px solid var(--blue-100);
-  border-radius:var(--radius-xl);padding:.8rem 1rem;margin-top:1.1rem}
-.sp-about>i{font-size:1.4rem;color:var(--blue-700);line-height:1}
-.sp-about h6{margin:0 0 .1rem;font-weight:700;font-size:var(--fs-base);color:var(--ink-900)}
-.sp-about p{margin:0;color:var(--ink-600);font-size:var(--fs-sm)}
-.sp-section{margin:1.1rem 0 .5rem;font-size:var(--fs-2xs);font-weight:700;letter-spacing:.08em;
-  text-transform:uppercase;color:var(--ink-500)}
+.sp-pill--on{background:var(--success-100);color:#15803d}
+.sp-pill--off{background:var(--danger-100);color:#c2272d}
+.sp-section{margin:1.2rem 0 .7rem;padding-top:1.1rem;border-top:1px solid var(--border-color);
+  font-size:var(--fs-md);font-weight:700;color:var(--ink-900)}
+.sp-section:first-child{margin-top:0;padding-top:0;border-top:0}
 
 /* data inside tabs: denser, so more rows fit without scrolling */
 .sp-body .table{font-size:var(--fs-xs)}
-.sp-body .table thead th{padding:.4rem .6rem}
-.sp-body .table tbody td{padding:.4rem .6rem}
+.sp-body .table thead th{padding:.5rem .7rem;font-size:var(--fs-xs)}
+.sp-body .table tbody td{padding:.45rem .7rem}
 .sp-body .alert{font-size:var(--fs-xs);padding:.45rem .75rem}
 .sp-body .form-label{font-size:var(--fs-xs)}
-.sp-body .border.rounded{border-radius:var(--radius-md)!important}
+.sp-body .border.rounded{border-radius:var(--radius-md)!important;border-color:var(--border-color)!important}
 
-/* footer */
-.sp-foot{flex:0 0 auto;display:flex;justify-content:flex-end;gap:.6rem;padding:.65rem 1.25rem;
-  border-top:1px solid var(--border-color);background:var(--surface-2)}
-.sp-btn{border-radius:var(--radius-pill);padding:.4rem 1.1rem;font-size:var(--fs-sm);font-weight:600;cursor:pointer;
-  border:1px solid var(--border-color-strong);background:var(--surface);color:inherit}
-.sp-btn:hover{background:var(--bg-app)}
-.sp-btn--primary{background:var(--blue-700);border-color:var(--blue-700);color:#fff;display:inline-flex;
-  align-items:center;gap:.4rem;box-shadow:var(--shadow-sm)}
-.sp-btn--primary:hover{background:var(--blue-800)}
-
+@media (max-width:860px){
+  .sp-side{flex-basis:14rem}
+  .sp-dl{grid-template-columns:8.5rem minmax(0,1fr)}
+}
 @media (max-width:700px){
   .sp-overlay{padding:0}
   .sp-card{height:100dvh;max-width:none;border-radius:0;border:0}
-  .sp-banner{height:3.5rem}
-  .sp-head{flex-direction:column;gap:.25rem;padding:0 1rem}
-  .sp-avatar-wrap{margin-top:-2.2rem}
-  .sp-avatar{width:4.75rem;height:4.75rem;font-size:1.3rem}
-  .sp-grid{grid-template-columns:1fr}
-  .sp-tabs{margin:.6rem 0 0;padding:0 .5rem}
-  .sp-body{padding:.9rem 1rem}
-  .sp-foot{padding:.6rem 1rem calc(.6rem + var(--safe-bottom))}
+  .sp-top{padding:.9rem 1rem}
+  .sp-main{display:block;overflow-y:auto;padding:.9rem 1rem calc(1rem + var(--safe-bottom))}
+  .sp-side{padding:1rem}
+  .sp-content{display:block;margin-top:1rem}
+  .sp-tabs{position:sticky;top:-.9rem;z-index:2}
+  .sp-body{overflow:visible;padding:1rem 0 0}
+  .sp-dl{grid-template-columns:1fr;gap:.1rem 0}
+  .sp-dl dd{margin-bottom:.6rem}
 }
 `;
 
-function Row({ icon, label: l, value }) {
+// dt/dd pair for .sp-dl
+function Field({ label: l, children, value }) {
   return (
-    <div className="sp-row">
-      <i className={`bi ${icon}`}></i>
-      <div>
-        <div className="sp-row__l">{l}</div>
-        <div className="sp-row__v">{value ?? "-"}</div>
-      </div>
-    </div>
+    <>
+      <dt>{l}</dt>
+      <dd>{children ?? value ?? "-"}</dd>
+    </>
   );
 }
 
@@ -171,24 +196,6 @@ function Stat({ title, value, tone }) {
 
 function Empty({ text }) {
   return <p className="form-text-hint">{text}</p>;
-}
-
-function Mountains() {
-  return (
-    <svg viewBox="0 0 960 150" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
-      <defs>
-        <linearGradient id="spSky" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#7ea2dc" /><stop offset="1" stopColor="#d7e1f3" />
-        </linearGradient>
-      </defs>
-      <rect width="960" height="150" fill="url(#spSky)" />
-      <ellipse cx="170" cy="40" rx="120" ry="18" fill="#fff" opacity=".35" />
-      <ellipse cx="720" cy="30" rx="150" ry="16" fill="#fff" opacity=".3" />
-      <polygon points="0,150 0,95 90,70 170,100 260,60 360,105 470,45 560,95 640,70 720,105 800,55 880,95 960,75 960,150" fill="#7b8fb8" opacity=".75" />
-      <polygon points="0,150 0,125 110,100 210,128 330,92 430,125 520,108 620,135 740,98 850,130 960,105 960,150" fill="#5f7399" />
-      <polygon points="640,150 720,95 760,110 820,70 880,105 960,90 960,150" fill="#9a6f5d" opacity=".85" />
-    </svg>
-  );
 }
 
 function printLetter(rec, ctx) {
@@ -243,7 +250,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
   const [photoBusy, setPhotoBusy] = useState(false);
   const fileRef = useRef(null);
 
-  // ---- drag to move (grab the banner or the header area) ----
+  // ---- drag to move (grab the title bar) ----
   const cardRef = useRef(null);
   const dragRef = useRef(null);
   const [pos, setPos] = useState({ x: 0, y: 0 });
@@ -320,8 +327,6 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
   const busy = loadingKey === tab && !data;
   const photo = ov?.id_card?.photo;
   const initials = (detail?.full_name || "").split(" ").filter(Boolean).slice(0, 2).map((n) => n[0]).join("");
-  const phone = detail?.user.phone_number || detail?.guardian?.phone_number;
-  const email = detail?.user.email || detail?.guardian?.email;
 
   const uploadPhoto = async (e) => {
     const file = e.target.files?.[0];
@@ -341,44 +346,51 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
     }
   };
 
-  // ---------------- PROFILE ----------------
+  // ---------------- PERSONAL INFO ----------------
   const renderOverview = () => {
     if (!detail) return <div className="text-center py-4"><span className="spinner-border spinner-border-sm me-2"></span>Loading...</div>;
     const idc = ov?.id_card;
     const g = detail.guardian;
     return (
       <>
-        <div className="sp-grid">
-          <Row icon="bi-person-fill" label="Full name" value={detail.full_name} />
-          <Row icon="bi-building" label="Current class" value={detail.current_classroom?.label || "Not enrolled"} />
-          <Row icon="bi-hash" label="Admission number" value={detail.admission_no} />
-          <Row icon="bi-telephone-fill" label="Phone" value={detail.user.phone_number || "-"} />
-          <Row icon="bi-mortarboard-fill" label="Curriculum" value={detail.curriculum_type} />
-          <Row icon="bi-envelope-fill" label="Email" value={detail.user.email || "-"} />
-          <Row icon="bi-calendar-event" label="Date admitted" value={fmtDate(detail.date_admitted)} />
-          <Row icon="bi-gender-ambiguous" label="Gender" value={detail.gender === "M" ? "Male" : "Female"} />
-          <Row icon="bi-cake2-fill" label="Date of birth" value={fmtDate(detail.date_of_birth)} />
-          <Row icon="bi-person-vcard-fill" label="National ID / Birth No" value={detail.user.national_id || "-"} />
-          <Row icon="bi-journal-bookmark-fill" label="UPI / NEMIS" value={detail.upi_number || "-"} />
-          <Row icon="bi-person-badge-fill" label="Username" value={detail.user.username} />
-        </div>
+        <h3 className="sp-section">Personal Information</h3>
+        <dl className="sp-dl">
+          <Field label="Full name" value={detail.full_name} />
+          <Field label="Admission number" value={detail.admission_no} />
+          <Field label="Class">
+            {detail.current_classroom?.label
+              ? <span className="sp-chip">{detail.current_classroom.label}</span>
+              : "Not enrolled"}
+          </Field>
+          <Field label="Gender" value={detail.gender === "M" ? "Male" : "Female"} />
+          <Field label="Date of birth" value={dobText(detail.date_of_birth)} />
+          <Field label="Phone" value={detail.user.phone_number || "-"} />
+          <Field label="Email" value={detail.user.email || "-"} />
+          <Field label="Curriculum" value={detail.curriculum_type} />
+          <Field label="Date admitted" value={fmtDate(detail.date_admitted)} />
+          <Field label="National ID / Birth No" value={detail.user.national_id || "-"} />
+          <Field label="UPI / NEMIS" value={detail.upi_number || "-"} />
+          <Field label="Username" value={detail.user.username} />
+          <Field label="Enrollment status">
+            <span className={`sp-pill ${detail.is_active ? "sp-pill--on" : "sp-pill--off"}`}>
+              <span className="sp-dot"></span>{detail.is_active ? "Active" : "Inactive"}
+            </span>
+          </Field>
+        </dl>
 
-        <div className="sp-about">
-          <i className="bi bi-shield-fill-check"></i>
-          <div>
-            <h6>Parent / Guardian</h6>
-            {g ? (
-              <p>
-                {g.name} ({g.relationship_display}) - {g.phone_number || "no phone"}
-                {g.email ? ` - ${g.email}` : ""}
-              </p>
-            ) : <p>No guardian linked to this student.</p>}
-          </div>
-        </div>
+        <h3 className="sp-section">Parent / Guardian Information</h3>
+        {g ? (
+          <dl className="sp-dl">
+            <Field label="Name" value={g.name} />
+            <Field label="Phone" value={g.phone_number || "no phone"} />
+            <Field label="Relationship" value={g.relationship_display} />
+            {g.email ? <Field label="Email" value={g.email} /> : null}
+          </dl>
+        ) : <Empty text="No guardian linked to this student." />}
 
         {ov && (
           <>
-            <div className="sp-section">At a glance</div>
+            <h3 className="sp-section">At a glance</h3>
             <div className="row g-2">
               <Stat title="Fee balance" value={kes(ov.balance)} tone={ov.balance > 0 ? "text-danger" : "text-success"} />
               <Stat title="Disciplinary records" value={ov.discipline_count} />
@@ -386,7 +398,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
               <Stat title="Login" value={ov.login_enabled ? "Enabled" : "Disabled"} tone={ov.login_enabled ? "text-success" : "text-danger"} />
             </div>
 
-            <div className="sp-section">Student ID</div>
+            <h3 className="sp-section">Student ID</h3>
             {idc ? (
               idc.card_number ? (
                 <div className="row g-x-3">
@@ -423,7 +435,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
           </div>
         )}
 
-        <div className="sp-section" style={{ marginTop: 8 }}>Fee statement</div>
+        <h3 className="sp-section" style={{ marginTop: 8 }}>Fee statement</h3>
         {data.invoices.length === 0 ? <Empty text="No invoices yet." /> : (
           <div className="table-responsive mb-4">
             <table className="table table-sm">
@@ -445,7 +457,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
           </div>
         )}
 
-        <div className="sp-section" style={{ marginTop: 8 }}>Payments</div>
+        <h3 className="sp-section" style={{ marginTop: 8 }}>Payments</h3>
         {data.payments.length === 0 ? <Empty text="No payments recorded." /> : (
           <div className="table-responsive">
             <table className="table table-sm">
@@ -599,7 +611,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
           </form>
         )}
 
-        <div className="sp-section" style={{ marginTop: 8 }}>Previous records ({data.records.length})</div>
+        <h3 className="sp-section" style={{ marginTop: 8 }}>Previous records ({data.records.length})</h3>
         {data.records.length === 0 ? <Empty text="No disciplinary records. A clean file." /> : data.records.map((r) => (
           <div key={r.id} className="border rounded p-2 mb-2">
             <div className="d-flex flex-wrap justify-content-between gap-2">
@@ -634,7 +646,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
     if (!data.available) return <Empty text="Meal management is not available." />;
     return (
       <>
-        <div className="sp-section" style={{ marginTop: 0 }}>Meal plan (current year)</div>
+        <h3 className="sp-section">Meal plan (current year)</h3>
         {data.plan ? (
           <>
             <div className="row g-x-3">
@@ -651,14 +663,14 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
           </>
         ) : <Empty text="Not on any meal plan this year." />}
 
-        <div className="sp-section">Meal card & wallet</div>
+        <h3 className="sp-section">Meal card & wallet</h3>
         <div className="row g-x-3">
           <Info label="Card number" value={data.card?.card_number || "No active card"} />
           <Info label="Card status" value={data.card?.status || "-"} />
           <Info label="Wallet balance" value={data.wallet ? kes(data.wallet.balance) : "No wallet"} />
         </div>
 
-        <div className="sp-section">Recent meals</div>
+        <h3 className="sp-section">Recent meals</h3>
         {data.recent_meals.length === 0 ? <Empty text="No meals collected yet." /> : (
           <div className="table-responsive">
             <table className="table table-sm">
@@ -672,7 +684,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
 
         {data.wallet_transactions.length > 0 && (
           <>
-            <div className="sp-section">Wallet transactions</div>
+            <h3 className="sp-section">Wallet transactions</h3>
             <div className="table-responsive">
               <table className="table table-sm">
                 <thead><tr><th>Date</th><th>Type</th><th className="text-end">Amount</th><th className="text-end">Balance</th><th>Reference</th></tr></thead>
@@ -697,7 +709,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
           <Stat title="Currently borrowed" value={data.currently_borrowed} />
           <Stat title="Total loans" value={data.loans.length} />
         </div>
-        <div className="sp-section" style={{ marginTop: 8 }}>Loans</div>
+        <h3 className="sp-section" style={{ marginTop: 8 }}>Loans</h3>
         {data.loans.length === 0 ? <Empty text="No books borrowed." /> : (
           <div className="table-responsive mb-3">
             <table className="table table-sm">
@@ -712,7 +724,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
             </table>
           </div>
         )}
-        <div className="sp-section" style={{ marginTop: 8 }}>Fines</div>
+        <h3 className="sp-section" style={{ marginTop: 8 }}>Fines</h3>
         {data.fines.length === 0 ? <Empty text="No library fines." /> : (
           <div className="table-responsive">
             <table className="table table-sm">
@@ -769,7 +781,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
 
   const renderAccount = () => (
     <>
-      <div className="sp-section" style={{ marginTop: 0 }}>Reset password</div>
+      <h3 className="sp-section">Reset password</h3>
       {pwResult ? (
         <div className="alert alert-success">
           New password: <code>{pwResult}</code>
@@ -785,7 +797,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
       )}
       <div className="form-text-hint">No need to know the old password. Also clears any lockout.</div>
 
-      <div className="sp-section">Account status</div>
+      <h3 className="sp-section">Account status</h3>
       <div className="row g-x-3 mb-2">
         <Info label="Student profile" value={data.profile_active ? "Active" : "Inactive"} />
         <Info label="Can log in" value={data.login_enabled ? "Yes" : "No"} />
@@ -816,7 +828,7 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
         )
       ) : <Empty text="Only an administrator can deactivate or reactivate a student." />}
 
-      <div className="sp-section">Status history</div>
+      <h3 className="sp-section">Status history</h3>
       {data.history.length === 0 ? <Empty text="No status changes." /> : data.history.map((h, i) => (
         <div key={i} className="small border-bottom py-1">
           <strong>{h.action}</strong> - {fmtDate(h.at)} by {h.by}{h.reason ? ` - ${h.reason}` : ""}
@@ -833,72 +845,107 @@ export default function StudentProfileModal({ show, studentId, onClose, onChange
   if (!show) return null; // after every hook, so hook order never changes
 
   const isActive = detail ? detail.is_active : true;
+  const phone = detail?.user.phone_number || detail?.guardian?.phone_number;
+  const email = detail?.user.email || detail?.guardian?.email;
 
   return (
     <div className="sp-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <style>{CSS}</style>
-      <div ref={cardRef} className="sp-card" role="dialog" aria-modal="true" aria-label="Student profile"
+      <div ref={cardRef} className="sp-card" role="dialog" aria-modal="true" aria-label="Student details"
         style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}>
-        <div className="sp-banner sp-drag" title="Drag to move" {...dragProps}>
-          <Mountains />
+
+        {/* Title bar - drag here to move */}
+        <div className="sp-top sp-drag" title="Drag to move" {...dragProps}>
+          <i className="bi bi-mortarboard sp-top__icon" aria-hidden="true"></i>
+          <div className="sp-top__text">
+            <h2 className="sp-top__title">Student Details</h2>
+            <p className="sp-top__sub">View complete information about this student</p>
+          </div>
           <button className="sp-close" onClick={onClose} aria-label="Close"><i className="bi bi-x-lg"></i></button>
         </div>
 
-        <div className="sp-head sp-drag" {...dragProps}>
-          <div className="sp-avatar-wrap">
-            {photo ? <img className="sp-avatar" src={photo} alt="" /> : <div className="sp-avatar">{initials || <i className="bi bi-person"></i>}</div>}
-            <button className="sp-camera" title="Change photo" aria-label="Change photo" disabled={photoBusy}
-              onClick={() => fileRef.current?.click()}>
-              {photoBusy ? <span className="spinner-border spinner-border-sm"></span> : <i className="bi bi-camera-fill"></i>}
-            </button>
-            <input ref={fileRef} type="file" accept="image/*" hidden onChange={uploadPhoto} />
-          </div>
+        <div className="sp-main">
+          {/* Left: profile card */}
+          <aside className="sp-side">
+            <span className={`sp-status ${isActive ? "sp-status--on" : "sp-status--off"}`}>
+              <span className="sp-dot"></span>{isActive ? "Active" : "Inactive"}
+            </span>
 
-          <div className="sp-who">
-            <h2 className="sp-name">{detail?.full_name || "Loading..."}</h2>
-            <div className="sp-sub">
-              {detail ? `${detail.admission_no} - ${detail.current_classroom?.label || "Not enrolled"}` : ""}
+            <div className="sp-avatar-wrap">
+              {photo ? <img className="sp-avatar" src={photo} alt="" /> : <div className="sp-avatar">{initials || <i className="bi bi-person"></i>}</div>}
+              <button className="sp-camera" title="Change photo" aria-label="Change photo" disabled={photoBusy}
+                onClick={() => fileRef.current?.click()}>
+                {photoBusy ? <span className="spinner-border spinner-border-sm"></span> : <i className="bi bi-camera-fill"></i>}
+              </button>
+              <input ref={fileRef} type="file" accept="image/*" hidden onChange={uploadPhoto} />
             </div>
-            <div className="sp-chips">
-              <span className={`sp-pill ${isActive ? "sp-pill--on" : "sp-pill--off"}`}>
-                <span className="sp-dot"></span>{isActive ? "Active" : "Inactive"}
-              </span>
-              {email && (<><span className="sp-sep"></span><span className="sp-chip"><i className="bi bi-envelope"></i>{email}</span></>)}
-              {phone && (<><span className="sp-sep"></span><span className="sp-chip"><i className="bi bi-telephone"></i>{phone}</span></>)}
+
+            <h3 className="sp-side__name">{detail?.full_name || "Loading..."}</h3>
+            <div className="sp-side__adm">{detail?.admission_no || ""}</div>
+
+            {detail && (
+              <ul className="sp-side__list">
+                <li className="sp-side__row">
+                  <i className="bi bi-mortarboard"></i>
+                  <span><span className="sp-side__l">Class</span><span className="sp-side__v">{detail.current_classroom?.label || "Not enrolled"}</span></span>
+                </li>
+                <li className="sp-side__row">
+                  <i className="bi bi-gender-ambiguous"></i>
+                  <span><span className="sp-side__l">Gender</span><span className="sp-side__v">{detail.gender === "M" ? "Male" : "Female"}</span></span>
+                </li>
+                <li className="sp-side__row">
+                  <i className="bi bi-calendar-event"></i>
+                  <span><span className="sp-side__l">Date of birth</span><span className="sp-side__v">{dobText(detail.date_of_birth)}</span></span>
+                </li>
+                {phone && (
+                  <li className="sp-side__row">
+                    <i className="bi bi-telephone"></i>
+                    <span><span className="sp-side__l">Phone</span><span className="sp-side__v">{phone}</span></span>
+                  </li>
+                )}
+                {email && (
+                  <li className="sp-side__row">
+                    <i className="bi bi-envelope"></i>
+                    <span><span className="sp-side__l">Email</span><span className="sp-side__v">{email}</span></span>
+                  </li>
+                )}
+              </ul>
+            )}
+
+            {onEdit && (
+              <div className="sp-side__actions">
+                <button className="sp-btn sp-btn--primary" onClick={() => onEdit(studentId)}>
+                  <i className="bi bi-pencil-square"></i>Edit Profile
+                </button>
+              </div>
+            )}
+          </aside>
+
+          {/* Right: tabs + content */}
+          <section className="sp-content">
+            <div className="sp-tabs" role="tablist">
+              {TABS.map(([key, text, icon]) => (
+                <button key={key} type="button" role="tab" aria-selected={tab === key}
+                  className={`sp-tab ${tab === key ? "is-active" : ""}`} onClick={() => setTab(key)}>
+                  <i className={`bi ${icon}`}></i>{text}
+                </button>
+              ))}
             </div>
-          </div>
-        </div>
 
-        <div className="sp-tabs" role="tablist">
-          {TABS.map(([key, text, icon]) => (
-            <button key={key} type="button" role="tab" aria-selected={tab === key}
-              className={`sp-tab ${tab === key ? "is-active" : ""}`} onClick={() => setTab(key)}>
-              <i className={`bi ${icon}`}></i>{text}
-            </button>
-          ))}
-        </div>
+            <div className="sp-body">
+              {flash && (
+                <div className={`alert alert-${flash.type} alert-dismissible py-2`}>
+                  {flash.text}
+                  <button type="button" className="btn-close" onClick={() => setFlash(null)}></button>
+                </div>
+              )}
+              {err && !data && <div className="alert alert-danger py-2">{err}</div>}
 
-        <div className="sp-body">
-          {flash && (
-            <div className={`alert alert-${flash.type} alert-dismissible py-2`}>
-              {flash.text}
-              <button type="button" className="btn-close" onClick={() => setFlash(null)}></button>
+              {tab === "overview" ? renderOverview() : busy ? (
+                <div className="text-center py-4"><span className="spinner-border spinner-border-sm me-2"></span>Loading...</div>
+              ) : data ? renderers[tab]() : null}
             </div>
-          )}
-          {err && !data && <div className="alert alert-danger py-2">{err}</div>}
-
-          {tab === "overview" ? renderOverview() : busy ? (
-            <div className="text-center py-4"><span className="spinner-border spinner-border-sm me-2"></span>Loading...</div>
-          ) : data ? renderers[tab]() : null}
-        </div>
-
-        <div className="sp-foot">
-          <button className="sp-btn" onClick={onClose}>Cancel</button>
-          {onEdit && (
-            <button className="sp-btn sp-btn--primary" onClick={() => onEdit(studentId)}>
-              <i className="bi bi-pencil-square"></i>Edit Profile
-            </button>
-          )}
+          </section>
         </div>
       </div>
     </div>

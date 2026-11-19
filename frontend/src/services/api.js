@@ -850,6 +850,7 @@ export const student360Api = {
   addDiscipline: (id, payload) => api.post(`/students/${id}/360/discipline/`, payload),
   account: (id) => api.get(`/students/${id}/360/account/`),
   setActive: (id, payload) => api.post(`/students/${id}/360/account/`, payload),
+  uploadPhoto: (id, formData) => api.post(`/student-id/profiles/${id}/`, formData),
 };
 
 

@@ -91,6 +91,12 @@ const getImageBase64 = (url) => {
   });
 };
 
+const initialsOf = (name = "") =>
+  name.split(" ").filter(Boolean).slice(0, 2).map((n) => n[0]).join("").toUpperCase();
+
+// Inner padding for content that sits inside a .page-card but outside a table
+const PAD = { padding: "0 1.1rem 1.1rem" };
+
 export default function FinancePayments() {
   // ---------------------------------------------------------------------
   // TABS - "payment" (record a payment + receipt) vs "payments" (history)
@@ -156,10 +162,27 @@ export default function FinancePayments() {
     setStudentSearchError("");
   };
 
+  // The Search button just skips the typing delay.
+  const searchStudentNow = (e) => {
+    e.preventDefault();
+    setDebouncedStudentQuery(studentQuery.trim());
+  };
+
+  // Derived: the selected student + their total owed (latest invoice already
+  // folds in earlier arrears via brought_forward).
+  const selectedStudent = studentResults.find((s) => s.admission_no === selectedAdmission);
+  const selectedLatestInvoice = selectedStudent
+    ? [...selectedStudent.invoices]
+        .sort((a, b) => new Date(a.issued_at) - new Date(b.issued_at) || a.id - b.id)
+        .at(-1)
+    : null;
+  const selectedTotalOwed = selectedLatestInvoice ? Number(selectedLatestInvoice.balance) : 0;
+
   // ---------------------------------------------------------------------
-  // STEP 2 - ONE Pay Balance button. The backend
-  // (services.record_bulk_payment) splits the amount across the student's
-  // unpaid invoices oldest-first; any excess is kept as prepaid credit.
+  // STEP 2 - Payment details. The backend (services.record_bulk_payment)
+  // splits the amount across the student's unpaid invoices oldest-first;
+  // any excess is kept as prepaid credit.
+  // The form is now shown inline as soon as a student is selected.
   // ---------------------------------------------------------------------
   const [payingBalance, setPayingBalance] = useState(null); // { admission_no, student_name, totalOwed }
   const [paymentDraft, setPaymentDraft] = useState({ amount: "", method: "MPESA", reference: "" });
@@ -182,12 +205,19 @@ export default function FinancePayments() {
     setConfirmChecked(false);
   };
 
-  const closePaymentPanel = () => {
-    if (recording) return; // never close while a payment is being saved
-    setPayingBalance(null);
-    setPaymentError("");
-    setShowConfirm(false);
-    setConfirmChecked(false);
+  // (Re)start the payment form whenever the selected student or their balance changes.
+  useEffect(() => {
+    if (selectedStudent) {
+      openBalancePaymentPanel(selectedStudent, selectedTotalOwed);
+    } else {
+      setPayingBalance(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAdmission, selectedTotalOwed]);
+
+  const resetPaymentForm = () => {
+    if (recording || !selectedStudent) return;
+    openBalancePaymentPanel(selectedStudent, selectedTotalOwed);
   };
 
   const amountNumber = Number(paymentDraft.amount || 0);
@@ -997,31 +1027,39 @@ export default function FinancePayments() {
     }
   };
 
-  // Derived: the selected student + their total owed (latest invoice already
-  // folds in earlier arrears via brought_forward).
-  const selectedStudent = studentResults.find((s) => s.admission_no === selectedAdmission);
-  const selectedLatestInvoice = selectedStudent
-    ? [...selectedStudent.invoices]
-        .sort((a, b) => new Date(a.issued_at) - new Date(b.issued_at) || a.id - b.id)
-        .at(-1)
-    : null;
-  const selectedTotalOwed = selectedLatestInvoice ? Number(selectedLatestInvoice.balance) : 0;
-
   const receiptBalance = receipt ? describeBalance(receipt.balance) : null;
   const receiptBalanceClass =
     receiptBalance?.tone === "owing" ? "text-owe" : receiptBalance?.tone === "credit" ? "text-ok" : "";
+
+  // The six tabs, in the same order as before
+  const TABS = [
+    { key: "payment", label: "Payment", icon: "bi-cash-coin" },
+    { key: "payments", label: "Payments", icon: "bi-clock-history", count: count },
+    { key: "split", label: "Split Payment", icon: "bi-diagram-2" },
+    { key: "correct", label: "Correct Receipt", icon: "bi-pencil-square" },
+    { key: "alumni", label: "Alumni Balance", icon: "bi-mortarboard" },
+    { key: "other", label: "Other Payments", icon: "bi-bag-check" },
+  ];
+
+  // Latest few payments shown under the payment form
+  const recentPayments = payments.slice(0, 5);
 
   return (
     <div>
       {/* ================= PAGE HEADER ================= */}
       <div className="page-header">
-        <div>
-          <h1 className="page-title">Payments</h1>
-          <p className="page-subtitle">Record and manage all fee payments made by students</p>
+        <div className="page-header__lead">
+          <span className="page-header__icon" aria-hidden="true">
+            <i className="bi bi-credit-card"></i>
+          </span>
+          <div className="page-header__text">
+            <h1 className="page-title">Payments</h1>
+            <p className="page-subtitle">Record and manage all fee payments made by students</p>
+          </div>
         </div>
         <div className="page-header__actions">
-          <span className="badge badge-blue">
-            <i className="bi bi-cash-stack me-1"></i>
+          <span className="chip">
+            <i className="bi bi-cash-stack"></i>
             {count} payment{count !== 1 ? "s" : ""}
           </span>
         </div>
@@ -1035,458 +1073,297 @@ export default function FinancePayments() {
       )}
 
       {/* ================= TABS ================= */}
-      <ul className="nav nav-tabs mb-3">
-        <li className="nav-item">
+      <div className="page-tabs" role="tablist">
+        {TABS.map((t) => (
           <button
+            key={t.key}
             type="button"
-            className={`nav-link ${activeTab === "payment" ? "active" : ""}`}
-            onClick={() => setActiveTab("payment")}
+            role="tab"
+            aria-selected={activeTab === t.key}
+            className={`page-tab${activeTab === t.key ? " is-active" : ""}`}
+            onClick={() => setActiveTab(t.key)}
           >
-            <i className="bi bi-cash-coin me-1"></i>
-            Payment
+            <i className={`bi ${t.icon}`} aria-hidden="true"></i>
+            <span>{t.label}</span>
+            {t.count !== undefined && <span>({t.count})</span>}
           </button>
-        </li>
-        <li className="nav-item">
-          <button
-            type="button"
-            className={`nav-link ${activeTab === "payments" ? "active" : ""}`}
-            onClick={() => setActiveTab("payments")}
-          >
-            <i className="bi bi-list-ul me-1"></i>
-            Payments
-            <span className="badge badge-neutral ms-2">{count}</span>
-          </button>
-        </li>
-        <li className="nav-item">
-          <button
-            type="button"
-            className={`nav-link ${activeTab === "split" ? "active" : ""}`}
-            onClick={() => setActiveTab("split")}
-          >
-            <i className="bi bi-diagram-2 me-1"></i>
-            Split Payment
-          </button>
-        </li>
-        <li className="nav-item">
-          <button
-            type="button"
-            className={`nav-link ${activeTab === "correct" ? "active" : ""}`}
-            onClick={() => setActiveTab("correct")}
-          >
-            <i className="bi bi-pencil-square me-1"></i>
-            Correct Receipt
-          </button>
-        </li>
-        <li className="nav-item">
-          <button
-            type="button"
-            className={`nav-link ${activeTab === "alumni" ? "active" : ""}`}
-            onClick={() => setActiveTab("alumni")}
-          >
-            <i className="bi bi-mortarboard me-1"></i>
-            Alumni Balance
-          </button>
-        </li>
-        <li className="nav-item">
-          <button
-            type="button"
-            className={`nav-link ${activeTab === "other" ? "active" : ""}`}
-            onClick={() => setActiveTab("other")}
-          >
-            <i className="bi bi-bag-check me-1"></i>
-            Other Payments
-          </button>
-        </li>
-      </ul>
+        ))}
+      </div>
 
       {activeTab === "payment" && (
         <>
-          {/* ================= STEP 1: FIND + SELECT STUDENT ================= */}
-          <div className="card mb-3">
-            <div className="card-body">
-              <h6 className="panel-title">
-                <i className="bi bi-search text-brand"></i>
-                Record a Payment
-              </h6>
-              <p className="panel-desc">
-                Search for the student by admission number or name, then select them. The payment is applied
-                to their oldest unpaid term first, so arrears are always cleared correctly. Anything paid
-                above the total balance is saved as credit for the next term.
-              </p>
+          <section className="page-card">
+            {/* ================= STEP 1: FIND + SELECT STUDENT ================= */}
+            <form className="search-bar" onSubmit={searchStudentNow}>
+              <div className="search-bar__field">
+                <i className="bi bi-search" aria-hidden="true"></i>
+                <input
+                  className="form-control"
+                  placeholder="Search student by admission number or name..."
+                  aria-label="Search student by admission number or name"
+                  value={studentQuery}
+                  onChange={(e) => setStudentQuery(e.target.value)}
+                  autoFocus
+                />
+                {studentQuery && (
+                  <button type="button" className="search-bar__clear" onClick={clearStudentSearch} aria-label="Clear search">
+                    <i className="bi bi-x-lg"></i>
+                  </button>
+                )}
+              </div>
+              <button type="submit" className="btn btn-primary" disabled={studentSearchLoading}>
+                {studentSearchLoading ? (
+                  <span className="spinner-border spinner-border-sm"></span>
+                ) : (
+                  <i className="bi bi-search"></i>
+                )}
+                Search
+              </button>
+              <button type="button" className="btn btn-secondary" onClick={clearStudentSearch}>
+                Clear
+              </button>
+            </form>
 
-              <div className="row g-2">
-                <div className="col-md-8 col-lg-6">
-                  <label className="form-label">Admission No. or Student Name</label>
-                  <div className="d-flex gap-2">
-                    <div className="toolbar__search" style={{ maxWidth: "none" }}>
-                      <i className="bi bi-person-badge"></i>
-                      <input
-                        className="form-control"
-                        placeholder="e.g. 00081 or Jane Wanjiru"
-                        value={studentQuery}
-                        onChange={(e) => setStudentQuery(e.target.value)}
-                        autoFocus
-                      />
+            {/* search state */}
+            <div style={PAD}>
+              {studentSearchLoading && (
+                <div className="d-flex align-items-center text-muted-soft" style={{ fontSize: "var(--fs-sm)" }}>
+                  <span className="spinner-border spinner-border-sm me-2"></span>
+                  Searching...
+                </div>
+              )}
+
+              {!studentSearchLoading && !debouncedStudentQuery && (
+                <div className="empty-state py-3">
+                  <i className="bi bi-person-lines-fill"></i>
+                  <h6>Find a student</h6>
+                  <p className="text-muted-soft mb-0">
+                    Start typing an admission number or student name to bring up their fee balance. The payment is
+                    applied to their oldest unpaid term first, and anything above the total balance is saved as
+                    credit for the next term.
+                  </p>
+                </div>
+              )}
+
+              {!studentSearchLoading && debouncedStudentQuery && studentSearchError && (
+                <div className="alert alert-warning mb-0">
+                  <i className="bi bi-info-circle me-1"></i>
+                  {studentSearchError}
+                </div>
+              )}
+
+              {!studentSearchLoading && studentResults.length > 1 && (
+                <>
+                  <div className="section-label mb-2">Select the student to pay for</div>
+                  <div className="pick-list">
+                    {studentResults.map((s) => {
+                      const isSelected = selectedAdmission === s.admission_no;
+                      return (
+                        <button
+                          key={s.admission_no}
+                          type="button"
+                          onClick={() => setSelectedAdmission(isSelected ? null : s.admission_no)}
+                          className={`pick-item ${isSelected ? "is-selected" : ""}`}
+                        >
+                          <span>
+                            <span className="pick-item__adm">{s.admission_no}</span>
+                            <span className="cell-name">{s.student_name}</span>
+                          </span>
+                          {isSelected && <i className="bi bi-check-circle-fill"></i>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* ================= SELECTED STUDENT: person + fee summary ================= */}
+            {!studentSearchLoading && selectedStudent && (
+              <>
+                <div className="person-card">
+                  <span className="avatar avatar-xl" aria-hidden="true">
+                    {initialsOf(selectedStudent.student_name)}
+                  </span>
+                  <div>
+                    <div className="person-card__name">
+                      {selectedStudent.student_name}
+                      <span className="status-pill status-pill--warning">Balance due</span>
                     </div>
-                    {studentQuery && (
-                      <button
-                        className="btn btn-light btn-icon"
-                        type="button"
-                        onClick={clearStudentSearch}
-                        aria-label="Clear search"
-                      >
-                        <i className="bi bi-x-lg"></i>
-                      </button>
-                    )}
+                    <div className="person-card__meta">
+                      <span>
+                        {selectedStudent.admission_no}
+                        {selectedLatestInvoice?.grade_level_name ? ` • ${selectedLatestInvoice.grade_level_name}` : ""}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="person-card__summary">
+                    <h6 className="panel__title mb-2">Fee Summary</h6>
+                    <div className="kv-row">
+                      <span>Total Due:</span>
+                      <span>KES {currency(selectedLatestInvoice?.amount_due)}</span>
+                    </div>
+                    <div className="kv-row">
+                      <span>Paid:</span>
+                      <span>KES {currency(selectedLatestInvoice?.amount_paid)}</span>
+                    </div>
+                    <div className="kv-row kv-row--accent">
+                      <span>Balance:</span>
+                      <span>KES {currency(selectedTotalOwed)}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {/* search state */}
-              <div className="mt-3">
-                {studentSearchLoading && (
-                  <div className="d-flex align-items-center text-muted-soft" style={{ fontSize: "var(--fs-sm)" }}>
-                    <span className="spinner-border spinner-border-sm me-2"></span>
-                    Searching...
-                  </div>
-                )}
-
-                {!studentSearchLoading && !debouncedStudentQuery && (
-                  <div className="empty-state py-3">
-                    <i className="bi bi-person-lines-fill"></i>
-                    <h6>Find a student</h6>
-                    <p className="text-muted-soft mb-0">
-                      Start typing an admission number or student name to bring up their fee balance.
-                    </p>
-                  </div>
-                )}
-
-                {!studentSearchLoading && debouncedStudentQuery && studentSearchError && (
-                  <div className="alert alert-warning mb-0">
-                    <i className="bi bi-info-circle me-1"></i>
-                    {studentSearchError}
-                  </div>
-                )}
-
-                {!studentSearchLoading && studentResults.length > 0 && (
-                  <>
-                    <div className="section-label mb-2">
-                      {studentResults.length > 1 ? "Select the student to pay for" : "Student found"}
-                    </div>
-                    <div className="pick-list mb-3">
-                      {studentResults.map((s) => {
-                        const isSelected = selectedAdmission === s.admission_no;
-                        return (
-                          <button
-                            key={s.admission_no}
-                            type="button"
-                            onClick={() => setSelectedAdmission(isSelected ? null : s.admission_no)}
-                            className={`pick-item ${isSelected ? "is-selected" : ""}`}
-                          >
-                            <span>
-                              <span className="pick-item__adm">{s.admission_no}</span>
-                              <span className="cell-name">{s.student_name}</span>
-                            </span>
-                            {isSelected && <i className="bi bi-check-circle-fill"></i>}
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {selectedStudent && (
-                      <div className="balance-card">
-                        <div className="balance-card__head">
-                          <div className="table-avatar-cell">
-                            <div className="avatar avatar-md">
-                              {(selectedStudent.student_name || "")
-                                .split(" ")
-                                .filter(Boolean)
-                                .slice(0, 2)
-                                .map((n) => n[0])
-                                .join("")}
-                            </div>
-                            <div>
-                              <div className="balance-card__name">{selectedStudent.student_name}</div>
-                              <div className="balance-card__sub">{selectedStudent.admission_no}</div>
-                            </div>
-                          </div>
-                          <div className="balance-card__total">
-                            <div className="balance-card__total-label">Total balance owed</div>
-                            <div className="balance-card__total-value">KES {currency(selectedTotalOwed)}</div>
-                          </div>
-                        </div>
-
-                        <div className="table-responsive">
-                          <table className="table table-sm mb-0">
-                            <thead>
-                              <tr>
-                                <th>Term</th>
-                                <th>Class</th>
-                                <th className="text-end">Due</th>
-                                <th className="text-end">Paid</th>
-                                <th className="text-end">Balance</th>
+                {/* term-by-term breakdown (kept from the old design) */}
+                {selectedStudent.invoices.length > 1 && (
+                  <div style={PAD}>
+                    <div className="table-wrap">
+                      <div className="table-responsive">
+                        <table className="table table-sm mb-0">
+                          <thead>
+                            <tr>
+                              <th>Term</th>
+                              <th>Class</th>
+                              <th className="text-end">Due</th>
+                              <th className="text-end">Paid</th>
+                              <th className="text-end">Balance</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedStudent.invoices.map((inv) => (
+                              <tr key={inv.id}>
+                                <td>{inv.term_label}</td>
+                                <td>{inv.grade_level_name}</td>
+                                <td className="cell-num">KES {currency(inv.amount_due)}</td>
+                                <td className="cell-num text-ok">KES {currency(inv.amount_paid)}</td>
+                                <td className="cell-num fw-bold">KES {currency(inv.balance)}</td>
                               </tr>
-                            </thead>
-                            <tbody>
-                              {selectedStudent.invoices.map((inv) => (
-                                <tr key={inv.id}>
-                                  <td>{inv.term_label}</td>
-                                  <td>{inv.grade_level_name}</td>
-                                  <td className="cell-num">KES {currency(inv.amount_due)}</td>
-                                  <td className="cell-num text-ok">KES {currency(inv.amount_paid)}</td>
-                                  <td className="cell-num fw-bold">KES {currency(inv.balance)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-
-                        <div className="balance-card__foot">
-                          <button
-                            type="button"
-                            className="btn btn-success"
-                            onClick={() => openBalancePaymentPanel(selectedStudent, selectedTotalOwed)}
-                          >
-                            <i className="bi bi-cash-coin"></i>
-                            Pay Balance
-                          </button>
-                        </div>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* ================= STEP 2: PAYMENT PANEL (MODAL) ================= */}
-          {payingBalance && (
-            <div className="modal fade show d-block modal-scrim" tabIndex="-1">
-              <div className="modal-dialog modal-dialog-centered">
-                <div className="modal-content">
-                  <div className="modal-header">
-                    <h6 className="modal-title">
-                      <i className="bi bi-cash-coin me-2 text-brand"></i>
-                      Record Payment
-                    </h6>
-                    <button type="button" className="btn-close" onClick={closePaymentPanel}></button>
+                    </div>
                   </div>
-                  <form onSubmit={requestConfirmation}>
-                    <div className="modal-body">
-                      <div className="pay-student">
-                        <div>
-                          <div className="cell-name">{payingBalance.student_name}</div>
-                          <div className="balance-card__sub">
-                            {payingBalance.admission_no} · All outstanding terms
-                          </div>
-                        </div>
-                        <div className="text-end">
-                          <div className="balance-card__total-label">Balance due</div>
-                          <div className="cell-mono fw-bold text-owe">KES {currency(activeBalanceDue)}</div>
-                        </div>
+                )}
+
+                {/* ================= STEP 2: PAYMENT DETAILS (inline) ================= */}
+                {payingBalance && (
+                  <form className="split-grid" onSubmit={requestConfirmation}>
+                    {/* left: payment details */}
+                    <div className="panel">
+                      <div className="panel__head">
+                        <i className="bi bi-credit-card-2-front" aria-hidden="true"></i>
+                        <h6 className="panel__title">Payment Details</h6>
                       </div>
 
                       {paymentError && <div className="alert alert-danger">{paymentError}</div>}
 
-                      <div className="mb-3">
-                        <label className="form-label">Amount Received (KES)</label>
+                      <label className="form-label">
+                        Payment Method <span className="req">*</span>
+                      </label>
+                      <div className="option-grid">
+                        {Object.keys(METHOD_LABEL).map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            className={`option-card${paymentDraft.method === m ? " is-selected" : ""}`}
+                            aria-pressed={paymentDraft.method === m}
+                            onClick={() => setPaymentDraft({ ...paymentDraft, method: m })}
+                          >
+                            <i className={`bi ${METHOD_ICON[m]}`} aria-hidden="true"></i>
+                            {METHOD_LABEL[m]}
+                          </button>
+                        ))}
+                      </div>
+
+                      <label className="form-label">
+                        Amount Received <span className="req">*</span>
+                      </label>
+                      <div className="input-icon-group">
                         <input
                           type="number"
                           className="form-control cell-mono"
+                          style={{ paddingLeft: "0.8rem", paddingRight: "4.5rem" }}
                           required
                           min="0.01"
                           step="0.01"
                           value={paymentDraft.amount}
                           onChange={(e) => setPaymentDraft({ ...paymentDraft, amount: e.target.value })}
                         />
-                        {excessOverBalance > 0 ? (
-                          <div className="form-text-hint text-ok">
-                            <i className="bi bi-info-circle me-1"></i>
-                            KES {currency(excessOverBalance)} above the balance will be saved as credit and
-                            automatically applied to this student's next term invoice.
-                          </div>
-                        ) : (
-                          <div className="form-text-hint">
-                            Leave as-is to clear everything owed, or edit for a partial payment.
-                          </div>
-                        )}
+                        <span className="input-suffix">KES</span>
                       </div>
-
-                      <div className="row g-3">
-                        <div className="col-md-6">
-                          <label className="form-label">Method</label>
-                          <select
-                            className="form-select"
-                            value={paymentDraft.method}
-                            onChange={(e) => setPaymentDraft({ ...paymentDraft, method: e.target.value })}
-                          >
-                            <option value="MPESA">M-Pesa</option>
-                            <option value="BANK">Bank</option>
-                            <option value="CASH">Cash</option>
-                            <option value="CHEQUE">Cheque</option>
-                          </select>
+                      {excessOverBalance > 0 ? (
+                        <div className="form-text-hint text-ok">
+                          <i className="bi bi-info-circle me-1"></i>
+                          KES {currency(excessOverBalance)} above the balance will be saved as credit and
+                          automatically applied to this student's next term invoice.
                         </div>
-                        <div className="col-md-6">
-                          <label className="form-label">Reference</label>
-                          <input
-                            className="form-control"
-                            placeholder="M-Pesa code / receipt no."
-                            value={paymentDraft.reference}
-                            onChange={(e) => setPaymentDraft({ ...paymentDraft, reference: e.target.value })}
-                          />
+                      ) : (
+                        <div className="form-text-hint">
+                          Balance due: KES {currency(activeBalanceDue)}. Leave as-is to clear everything owed, or edit
+                          for a partial payment.
                         </div>
-                      </div>
+                      )}
 
-                      <div className="alert alert-primary mt-3 mb-0">
-                        You are recording <strong>KES {currency(amountNumber)}</strong> from{" "}
-                        <strong>{payingBalance.student_name}</strong> ({payingBalance.admission_no}) via{" "}
-                        <strong>{METHOD_LABEL[paymentDraft.method]}</strong>. Applied to the oldest term first.
-                      </div>
+                      <label className="form-label mt-3">Reference</label>
+                      <input
+                        className="form-control"
+                        placeholder="M-Pesa code / receipt no. (optional)"
+                        value={paymentDraft.reference}
+                        onChange={(e) => setPaymentDraft({ ...paymentDraft, reference: e.target.value })}
+                      />
                     </div>
-                    <div className="modal-footer">
-                      <button type="button" className="btn btn-secondary" onClick={closePaymentPanel}>
-                        Cancel
-                      </button>
-                      <button type="submit" className="btn btn-primary" disabled={recording}>
-                        <i className="bi bi-check2-circle"></i>
-                        Confirm Payment
-                      </button>
+
+                    {/* right: tinted action panel */}
+                    <div className="panel panel--tint d-flex flex-column">
+                      <div className="panel__head">
+                        <i className={`bi ${METHOD_ICON[paymentDraft.method]}`} aria-hidden="true"></i>
+                        <div>
+                          <h6 className="panel__title">{METHOD_LABEL[paymentDraft.method]} Payment</h6>
+                          <p className="panel__text">
+                            Click the button below to record the payment of{" "}
+                            <strong>KES {currency(amountNumber)}</strong> received from{" "}
+                            <strong>{payingBalance.student_name}</strong> via{" "}
+                            <strong>{METHOD_LABEL[paymentDraft.method]}</strong>. It is applied to the oldest unpaid
+                            term first.
+                          </p>
+                        </div>
+                      </div>
+
+                      {amountNumber > 0 && amountNumber < activeBalanceDue && (
+                        <div className="form-text-hint text-gold mt-0 mb-2">
+                          <i className="bi bi-info-circle me-1"></i>
+                          Partial payment: KES {currency(activeBalanceDue - amountNumber)} will remain unpaid.
+                        </div>
+                      )}
+
+                      <div className="mt-auto">
+                        <button type="submit" className="btn btn-primary btn-lg w-100" disabled={recording}>
+                          <i className={`bi ${METHOD_ICON[paymentDraft.method]}`} aria-hidden="true"></i>
+                          Record Payment via {METHOD_LABEL[paymentDraft.method]}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-link w-100 mt-1"
+                          onClick={resetPaymentForm}
+                          disabled={recording}
+                        >
+                          Reset form
+                        </button>
+                        <div className="panel__note">
+                          <i className="bi bi-info-circle" aria-hidden="true"></i>
+                          You will review the amount once more before it is saved.
+                        </div>
+                      </div>
                     </div>
                   </form>
-                </div>
-              </div>
-            </div>
-          )}
+                )}
+              </>
+            )}
 
-          {/* ================= STEP 2b: VERIFY TRANSACTION (BANK-STYLE POPUP) ================= */}
-          {payingBalance && showConfirm && (
-            <div
-              className="modal fade show d-block modal-scrim modal-scrim--top verify-modal"
-              tabIndex="-1"
-              role="dialog"
-              aria-modal="true"
-            >
-              <div className="modal-dialog modal-dialog-centered">
-                <div className="modal-content">
-                  <div className="modal-header">
-                    <h6 className="modal-title">
-                      <i className="bi bi-shield-check me-2"></i>
-                      Review Transaction
-                    </h6>
-                  </div>
-
-                  <div className="modal-body">
-                    <div className="text-center text-muted-soft" style={{ fontSize: "var(--fs-sm)" }}>
-                      Please verify the amount received before proceeding
-                    </div>
-
-                    <div className="amount-hero">
-                      <div className="amount-hero__label">Amount Received</div>
-                      <div className="amount-hero__value">KES {currency(amountNumber)}</div>
-                    </div>
-
-                    <div className="tx-box">
-                      <div className="profile-info-row">
-                        <span>Student</span>
-                        <span>{payingBalance.student_name}</span>
-                      </div>
-                      <div className="profile-info-row">
-                        <span>Admission No</span>
-                        <span className="cell-mono">{payingBalance.admission_no}</span>
-                      </div>
-                      <div className="profile-info-row">
-                        <span>Payment Method</span>
-                        <span>{METHOD_LABEL[paymentDraft.method]}</span>
-                      </div>
-                      <div className="profile-info-row">
-                        <span>Reference</span>
-                        <span className="cell-mono">{paymentDraft.reference || "-"}</span>
-                      </div>
-                      <div className="profile-info-row">
-                        <span>Balance Before</span>
-                        <span className="cell-mono">KES {currency(activeBalanceDue)}</span>
-                      </div>
-                      <div className="profile-info-row">
-                        <span>{balanceAfterPayment < 0 ? "Credit After Payment" : "Balance After"}</span>
-                        <span
-                          className={`cell-mono ${
-                            balanceAfterPayment > 0 ? "text-owe" : balanceAfterPayment < 0 ? "text-ok" : ""
-                          }`}
-                        >
-                          {balanceAfterPayment === 0
-                            ? "KES 0 (Fully paid)"
-                            : `KES ${currency(Math.abs(balanceAfterPayment))}`}
-                        </span>
-                      </div>
-                    </div>
-
-                    {excessOverBalance > 0 && (
-                      <div className="mt-2 text-ok" style={{ fontSize: "var(--fs-sm)" }}>
-                        <i className="bi bi-info-circle me-1"></i>
-                        KES {currency(excessOverBalance)} above the balance will be saved as credit.
-                      </div>
-                    )}
-                    {amountNumber < activeBalanceDue && (
-                      <div className="mt-2 text-gold" style={{ fontSize: "var(--fs-sm)" }}>
-                        <i className="bi bi-info-circle me-1"></i>
-                        Partial payment: KES {currency(activeBalanceDue - amountNumber)} will remain unpaid.
-                      </div>
-                    )}
-
-                    <div className="form-check confirm-check">
-                      <input
-                        className="form-check-input"
-                        type="checkbox"
-                        id="confirmAmountVerified"
-                        checked={confirmChecked}
-                        disabled={recording}
-                        onChange={(e) => setConfirmChecked(e.target.checked)}
-                      />
-                      <label className="form-check-label" htmlFor="confirmAmountVerified">
-                        I have verified that KES {currency(amountNumber)} was received (cash count, M-Pesa
-                        message or bank slip).
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="modal-footer">
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={cancelConfirmation}
-                      disabled={recording}
-                    >
-                      <i className="bi bi-arrow-left"></i>
-                      Back
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-success"
-                      onClick={submitPayment}
-                      disabled={!confirmChecked || recording}
-                    >
-                      {recording ? (
-                        <>
-                          <span className="spinner-border spinner-border-sm"></span>
-                          Processing...
-                        </>
-                      ) : (
-                        <>
-                          <i className="bi bi-check2-circle"></i>
-                          Confirm &amp; Record
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ================= STEP 3: RECEIPT ================= */}
-          {(receipt || receiptLoading) && (
-            <div className="card mb-3">
-              <div className="card-body">
+            {/* ================= STEP 3: RECEIPT ================= */}
+            {(receipt || receiptLoading) && (
+              <div className="page-card__section">
                 <div className="receipt-hero">
                   <div className="modal-icon-circle modal-icon-circle--success">
                     <i className="bi bi-receipt-cutoff"></i>
@@ -1617,274 +1494,491 @@ export default function FinancePayments() {
                   </div>
                 )}
               </div>
+            )}
+          </section>
+
+          {/* ================= RECENT TRANSACTIONS ================= */}
+          <section className="page-card">
+            <div className="page-card__body" style={{ paddingBottom: 0 }}>
+              <h6 className="page-card__title">
+                <span>
+                  <i className="bi bi-clock-history" aria-hidden="true"></i>
+                  Recent Transactions
+                </span>
+                <button type="button" className="page-card__link" onClick={() => setActiveTab("payments")}>
+                  View All <i className="bi bi-arrow-right" aria-hidden="true"></i>
+                </button>
+              </h6>
+            </div>
+
+            {listLoading ? (
+              <TableSkeleton rows={3} columns={7} />
+            ) : recentPayments.length === 0 ? (
+              <div className="empty-state py-3">
+                <i className="bi bi-cash-stack"></i>
+                <p className="text-muted-soft mb-0">No payments have been recorded yet.</p>
+              </div>
+            ) : (
+              <div className="table-wrap">
+                <div className="table-responsive">
+                  <table className="table table-hover mb-0">
+                    <thead>
+                      <tr>
+                        <th>Date &amp; Time</th>
+                        <th>Student</th>
+                        <th>Amount</th>
+                        <th>Method</th>
+                        <th>Status</th>
+                        <th>Reference</th>
+                        <th className="text-center">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recentPayments.map((p) => (
+                        <tr key={p.id}>
+                          <td>
+                            {p.paid_at
+                              ? new Date(p.paid_at).toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" })
+                              : "-"}
+                          </td>
+                          <td>
+                            <div className="table-avatar-cell">
+                              <div className="avatar-sm">{initialsOf(p.student_name)}</div>
+                              <span className="cell-name">{p.student_name}</span>
+                            </div>
+                          </td>
+                          <td className="fw-semibold">KES {currency(p.amount)}</td>
+                          <td>
+                            <span className={`badge ${METHOD_BADGE[p.method] || "badge-neutral"}`}>
+                              <i className={`bi ${METHOD_ICON[p.method] || "bi-credit-card"} me-1`}></i>
+                              {METHOD_LABEL[p.method] || p.method}
+                            </span>
+                          </td>
+                          <td>
+                            <span className="status-pill status-pill--success">Completed</span>
+                          </td>
+                          <td className="cell-mono">{p.reference || <span className="cell-muted">-</span>}</td>
+                          <td>
+                            <div className="row-actions">
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                title="Print this receipt"
+                                onClick={() => handlePrintPaymentReceipt(p)}
+                                disabled={printingReceiptId === p.id}
+                              >
+                                {printingReceiptId === p.id ? (
+                                  <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                ) : (
+                                  <i className="bi bi-printer"></i>
+                                )}
+                                Print
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* ================= STEP 2b: VERIFY TRANSACTION (BANK-STYLE POPUP) ================= */}
+          {payingBalance && showConfirm && (
+            <div
+              className="modal fade show d-block modal-scrim modal-scrim--top verify-modal"
+              tabIndex="-1"
+              role="dialog"
+              aria-modal="true"
+            >
+              <div className="modal-dialog modal-dialog-centered">
+                <div className="modal-content">
+                  <div className="modal-header">
+                    <span className="modal-header__icon" aria-hidden="true">
+                      <i className="bi bi-shield-check" style={{ color: "var(--warning-600)" }}></i>
+                    </span>
+                    <div className="modal-header__text">
+                      <h6 className="modal-title">Review Transaction</h6>
+                      <p className="modal-subtitle">Please verify the amount received before proceeding</p>
+                    </div>
+                  </div>
+
+                  <div className="modal-body">
+                    <div className="amount-hero">
+                      <div className="amount-hero__label">Amount Received</div>
+                      <div className="amount-hero__value">KES {currency(amountNumber)}</div>
+                    </div>
+
+                    <div className="tx-box">
+                      <div className="profile-info-row">
+                        <span>Student</span>
+                        <span>{payingBalance.student_name}</span>
+                      </div>
+                      <div className="profile-info-row">
+                        <span>Admission No</span>
+                        <span className="cell-mono">{payingBalance.admission_no}</span>
+                      </div>
+                      <div className="profile-info-row">
+                        <span>Payment Method</span>
+                        <span>{METHOD_LABEL[paymentDraft.method]}</span>
+                      </div>
+                      <div className="profile-info-row">
+                        <span>Reference</span>
+                        <span className="cell-mono">{paymentDraft.reference || "-"}</span>
+                      </div>
+                      <div className="profile-info-row">
+                        <span>Balance Before</span>
+                        <span className="cell-mono">KES {currency(activeBalanceDue)}</span>
+                      </div>
+                      <div className="profile-info-row">
+                        <span>{balanceAfterPayment < 0 ? "Credit After Payment" : "Balance After"}</span>
+                        <span
+                          className={`cell-mono ${
+                            balanceAfterPayment > 0 ? "text-owe" : balanceAfterPayment < 0 ? "text-ok" : ""
+                          }`}
+                        >
+                          {balanceAfterPayment === 0
+                            ? "KES 0 (Fully paid)"
+                            : `KES ${currency(Math.abs(balanceAfterPayment))}`}
+                        </span>
+                      </div>
+                    </div>
+
+                    {excessOverBalance > 0 && (
+                      <div className="mt-2 text-ok" style={{ fontSize: "var(--fs-sm)" }}>
+                        <i className="bi bi-info-circle me-1"></i>
+                        KES {currency(excessOverBalance)} above the balance will be saved as credit.
+                      </div>
+                    )}
+                    {amountNumber < activeBalanceDue && (
+                      <div className="mt-2 text-gold" style={{ fontSize: "var(--fs-sm)" }}>
+                        <i className="bi bi-info-circle me-1"></i>
+                        Partial payment: KES {currency(activeBalanceDue - amountNumber)} will remain unpaid.
+                      </div>
+                    )}
+
+                    <div className="form-check confirm-check">
+                      <input
+                        className="form-check-input"
+                        type="checkbox"
+                        id="confirmAmountVerified"
+                        checked={confirmChecked}
+                        disabled={recording}
+                        onChange={(e) => setConfirmChecked(e.target.checked)}
+                      />
+                      <label className="form-check-label" htmlFor="confirmAmountVerified">
+                        I have verified that KES {currency(amountNumber)} was received (cash count, M-Pesa
+                        message or bank slip).
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="modal-footer">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={cancelConfirmation}
+                      disabled={recording}
+                    >
+                      <i className="bi bi-arrow-left"></i>
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-success"
+                      onClick={submitPayment}
+                      disabled={!confirmChecked || recording}
+                    >
+                      {recording ? (
+                        <>
+                          <span className="spinner-border spinner-border-sm"></span>
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <i className="bi bi-check2-circle"></i>
+                          Confirm &amp; Record
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </>
       )}
 
       {activeTab === "payments" && (
-        <>
-          {/* ================= PAYMENTS TABLE (filters live inside) ================= */}
-          <div className="table-wrap">
-            <div className="table-wrap__header">
-              <div>
-                <span className="chart-card__title">
-                  <i className="bi bi-list-ul me-2 text-brand"></i>
-                  Payment History
-                </span>
-                <div className="chart-card__subtitle">
-                  {count} payment{count !== 1 ? "s" : ""} found
-                </div>
-              </div>
-              <div className="d-flex gap-2">
-                <button
-                  className="btn btn-sm btn-success"
-                  onClick={downloadExcel}
-                  disabled={exportingExcel}
-                  type="button"
-                  title="Download Excel"
-                >
-                  {exportingExcel ? (
-                    <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                  ) : (
-                    <>
-                      <i className="bi bi-file-earmark-excel"></i>Excel
-                    </>
-                  )}
-                </button>
-                <button
-                  className="btn btn-sm btn-danger"
-                  onClick={downloadPdf}
-                  disabled={exportingPdf}
-                  type="button"
-                  title="Download PDF"
-                >
-                  {exportingPdf ? (
-                    <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                  ) : (
-                    <>
-                      <i className="bi bi-file-earmark-pdf"></i>PDF
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            {/* ---- Filter toolbar (search first) ---- */}
-            <div className="toolbar toolbar--flush">
-              <div className="toolbar__search">
-                <i className="bi bi-search"></i>
-                <input
-                  className="form-control form-control-sm"
-                  placeholder="Search student, adm no, phone..."
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-              </div>
-
-              <select
-                className="form-select form-select-sm"
-                title="Academic Year"
-                aria-label="Academic Year"
-                value={filters.invoice__enrollment__academic_year}
-                onChange={(e) => updateFilter("invoice__enrollment__academic_year", e.target.value)}
-              >
-                <option value="">Year</option>
-                {academicYears.map((y) => (
-                  <option key={y.id} value={y.id}>
-                    {y.year}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                className="form-select form-select-sm"
-                title="Grade"
-                aria-label="Grade"
-                value={filters.invoice__enrollment__classroom__grade_level}
-                onChange={(e) => updateFilter("invoice__enrollment__classroom__grade_level", e.target.value)}
-              >
-                <option value="">Grade</option>
-                {gradeLevels.map((g) => (
-                  <option key={g.id} value={g.id}>
-                    {g.name}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                className="form-select form-select-sm"
-                title="Stream"
-                aria-label="Stream"
-                value={filters.invoice__enrollment__classroom__stream}
-                onChange={(e) => updateFilter("invoice__enrollment__classroom__stream", e.target.value)}
-              >
-                <option value="">Stream</option>
-                {streams.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                className="form-select form-select-sm"
-                title="Term"
-                aria-label="Term"
-                value={filters.invoice__fee_structure__term}
-                onChange={(e) => updateFilter("invoice__fee_structure__term", e.target.value)}
-              >
-                <option value="">Term</option>
-                {terms.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.term_number ? `Term ${t.term_number}` : `Term #${t.id}`}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                className="form-select form-select-sm"
-                title="Method"
-                aria-label="Method"
-                value={filters.method}
-                onChange={(e) => updateFilter("method", e.target.value)}
-              >
-                <option value="">Method</option>
-                <option value="MPESA">M-Pesa</option>
-                <option value="BANK">Bank</option>
-                <option value="CASH">Cash</option>
-                <option value="CHEQUE">Cheque</option>
-              </select>
-
+        <section className="page-card">
+          {/* ---- Search + exports ---- */}
+          <div className="search-bar">
+            <div className="search-bar__field">
+              <i className="bi bi-search" aria-hidden="true"></i>
               <input
-                type="date"
-                className="form-control form-control-sm"
-                title="From date"
-                aria-label="From date"
-                value={filters.date_from}
-                max={filters.date_to || undefined}
-                onChange={(e) => updateFilter("date_from", e.target.value)}
+                className="form-control"
+                placeholder="Search student, adm no, phone..."
+                aria-label="Search payments"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
               />
-              <span className="range-sep">&rarr;</span>
-              <input
-                type="date"
-                className="form-control form-control-sm"
-                title="To date"
-                aria-label="To date"
-                value={filters.date_to}
-                min={filters.date_from || undefined}
-                onChange={(e) => updateFilter("date_to", e.target.value)}
-              />
-
-              {hasActiveFilters && (
-                <button className="btn btn-sm btn-light" onClick={clearFilters} type="button" title="Clear filters">
-                  <i className="bi bi-x-lg"></i> Clear
+              {search && (
+                <button type="button" className="search-bar__clear" onClick={() => setSearch("")} aria-label="Clear search">
+                  <i className="bi bi-x-lg"></i>
                 </button>
               )}
             </div>
-
-            {/* ---- Active filter chips ---- */}
+            <button
+              className="btn btn-secondary"
+              onClick={downloadExcel}
+              disabled={exportingExcel}
+              type="button"
+              title="Download Excel"
+            >
+              {exportingExcel ? (
+                <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+              ) : (
+                <>
+                  <i className="bi bi-file-earmark-excel"></i>Excel
+                </>
+              )}
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={downloadPdf}
+              disabled={exportingPdf}
+              type="button"
+              title="Download PDF"
+            >
+              {exportingPdf ? (
+                <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+              ) : (
+                <>
+                  <i className="bi bi-file-earmark-pdf"></i>PDF
+                </>
+              )}
+            </button>
             {hasActiveFilters && (
-              <div className="chip-row">
-                {search && (
-                  <span className="filter-chip">
-                    Search: "{search}"
-                    <button onClick={() => setSearch("")}>
-                      <i className="bi bi-x"></i>
-                    </button>
-                  </span>
-                )}
-                {filters.invoice__enrollment__academic_year && (
-                  <span className="filter-chip">
-                    Year:{" "}
-                    {
-                      academicYears.find(
-                        (y) => String(y.id) === String(filters.invoice__enrollment__academic_year)
-                      )?.year
-                    }
-                    <button onClick={() => updateFilter("invoice__enrollment__academic_year", "")}>
-                      <i className="bi bi-x"></i>
-                    </button>
-                  </span>
-                )}
-                {filters.invoice__enrollment__classroom__grade_level && (
-                  <span className="filter-chip">
-                    Grade:{" "}
-                    {
-                      gradeLevels.find(
-                        (g) => String(g.id) === String(filters.invoice__enrollment__classroom__grade_level)
-                      )?.name
-                    }
-                    <button onClick={() => updateFilter("invoice__enrollment__classroom__grade_level", "")}>
-                      <i className="bi bi-x"></i>
-                    </button>
-                  </span>
-                )}
-                {filters.invoice__enrollment__classroom__stream && (
-                  <span className="filter-chip">
-                    Stream:{" "}
-                    {
-                      streams.find(
-                        (s) => String(s.id) === String(filters.invoice__enrollment__classroom__stream)
-                      )?.name
-                    }
-                    <button onClick={() => updateFilter("invoice__enrollment__classroom__stream", "")}>
-                      <i className="bi bi-x"></i>
-                    </button>
-                  </span>
-                )}
-                {filters.invoice__fee_structure__term && (
-                  <span className="filter-chip">
-                    Term:{" "}
-                    {
-                      terms.find((t) => String(t.id) === String(filters.invoice__fee_structure__term))
-                        ?.term_number
-                    }
-                    <button onClick={() => updateFilter("invoice__fee_structure__term", "")}>
-                      <i className="bi bi-x"></i>
-                    </button>
-                  </span>
-                )}
-                {filters.method && (
-                  <span className="filter-chip">
-                    Method: {METHOD_LABEL[filters.method] || filters.method}
-                    <button onClick={() => updateFilter("method", "")}>
-                      <i className="bi bi-x"></i>
-                    </button>
-                  </span>
-                )}
-                {filters.date_from && (
-                  <span className="filter-chip">
-                    From: {filters.date_from}
-                    <button onClick={() => updateFilter("date_from", "")}>
-                      <i className="bi bi-x"></i>
-                    </button>
-                  </span>
-                )}
-                {filters.date_to && (
-                  <span className="filter-chip">
-                    To: {filters.date_to}
-                    <button onClick={() => updateFilter("date_to", "")}>
-                      <i className="bi bi-x"></i>
-                    </button>
-                  </span>
-                )}
-              </div>
+              <button className="btn btn-secondary" onClick={clearFilters} type="button" title="Clear filters">
+                <i className="bi bi-x-lg"></i> Clear
+              </button>
             )}
+          </div>
 
-            {listLoading ? (
-              <TableSkeleton rows={5} columns={13} />
-            ) : payments.length === 0 ? (
-              <div className="empty-state">
-                <i className="bi bi-cash-stack"></i>
-                <h6>No payments found</h6>
-                <p className="text-muted-soft">
-                  {hasActiveFilters
-                    ? "No payments match your filters. Try adjusting your search criteria."
-                    : "No payments have been recorded yet."}
-                </p>
-              </div>
-            ) : (
+          {/* ---- Filters ---- */}
+          <div className="search-bar" style={{ paddingTop: 0 }}>
+            <select
+              className="form-select"
+              title="Academic Year"
+              aria-label="Academic Year"
+              value={filters.invoice__enrollment__academic_year}
+              onChange={(e) => updateFilter("invoice__enrollment__academic_year", e.target.value)}
+            >
+              <option value="">Year</option>
+              {academicYears.map((y) => (
+                <option key={y.id} value={y.id}>
+                  {y.year}
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="form-select"
+              title="Grade"
+              aria-label="Grade"
+              value={filters.invoice__enrollment__classroom__grade_level}
+              onChange={(e) => updateFilter("invoice__enrollment__classroom__grade_level", e.target.value)}
+            >
+              <option value="">Grade</option>
+              {gradeLevels.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="form-select"
+              title="Stream"
+              aria-label="Stream"
+              value={filters.invoice__enrollment__classroom__stream}
+              onChange={(e) => updateFilter("invoice__enrollment__classroom__stream", e.target.value)}
+            >
+              <option value="">Stream</option>
+              {streams.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="form-select"
+              title="Term"
+              aria-label="Term"
+              value={filters.invoice__fee_structure__term}
+              onChange={(e) => updateFilter("invoice__fee_structure__term", e.target.value)}
+            >
+              <option value="">Term</option>
+              {terms.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.term_number ? `Term ${t.term_number}` : `Term #${t.id}`}
+                </option>
+              ))}
+            </select>
+
+            <select
+              className="form-select"
+              title="Method"
+              aria-label="Method"
+              value={filters.method}
+              onChange={(e) => updateFilter("method", e.target.value)}
+            >
+              <option value="">Method</option>
+              <option value="MPESA">M-Pesa</option>
+              <option value="BANK">Bank</option>
+              <option value="CASH">Cash</option>
+              <option value="CHEQUE">Cheque</option>
+            </select>
+
+            <input
+              type="date"
+              className="form-control"
+              style={{ width: "auto" }}
+              title="From date"
+              aria-label="From date"
+              value={filters.date_from}
+              max={filters.date_to || undefined}
+              onChange={(e) => updateFilter("date_from", e.target.value)}
+            />
+            <span className="range-sep">&rarr;</span>
+            <input
+              type="date"
+              className="form-control"
+              style={{ width: "auto" }}
+              title="To date"
+              aria-label="To date"
+              value={filters.date_to}
+              min={filters.date_from || undefined}
+              onChange={(e) => updateFilter("date_to", e.target.value)}
+            />
+          </div>
+
+          {/* ---- Active filter chips ---- */}
+          {hasActiveFilters && (
+            <div className="chip-row">
+              {search && (
+                <span className="filter-chip">
+                  Search: "{search}"
+                  <button onClick={() => setSearch("")}>
+                    <i className="bi bi-x"></i>
+                  </button>
+                </span>
+              )}
+              {filters.invoice__enrollment__academic_year && (
+                <span className="filter-chip">
+                  Year:{" "}
+                  {
+                    academicYears.find(
+                      (y) => String(y.id) === String(filters.invoice__enrollment__academic_year)
+                    )?.year
+                  }
+                  <button onClick={() => updateFilter("invoice__enrollment__academic_year", "")}>
+                    <i className="bi bi-x"></i>
+                  </button>
+                </span>
+              )}
+              {filters.invoice__enrollment__classroom__grade_level && (
+                <span className="filter-chip">
+                  Grade:{" "}
+                  {
+                    gradeLevels.find(
+                      (g) => String(g.id) === String(filters.invoice__enrollment__classroom__grade_level)
+                    )?.name
+                  }
+                  <button onClick={() => updateFilter("invoice__enrollment__classroom__grade_level", "")}>
+                    <i className="bi bi-x"></i>
+                  </button>
+                </span>
+              )}
+              {filters.invoice__enrollment__classroom__stream && (
+                <span className="filter-chip">
+                  Stream:{" "}
+                  {
+                    streams.find(
+                      (s) => String(s.id) === String(filters.invoice__enrollment__classroom__stream)
+                    )?.name
+                  }
+                  <button onClick={() => updateFilter("invoice__enrollment__classroom__stream", "")}>
+                    <i className="bi bi-x"></i>
+                  </button>
+                </span>
+              )}
+              {filters.invoice__fee_structure__term && (
+                <span className="filter-chip">
+                  Term:{" "}
+                  {
+                    terms.find((t) => String(t.id) === String(filters.invoice__fee_structure__term))
+                      ?.term_number
+                  }
+                  <button onClick={() => updateFilter("invoice__fee_structure__term", "")}>
+                    <i className="bi bi-x"></i>
+                  </button>
+                </span>
+              )}
+              {filters.method && (
+                <span className="filter-chip">
+                  Method: {METHOD_LABEL[filters.method] || filters.method}
+                  <button onClick={() => updateFilter("method", "")}>
+                    <i className="bi bi-x"></i>
+                  </button>
+                </span>
+              )}
+              {filters.date_from && (
+                <span className="filter-chip">
+                  From: {filters.date_from}
+                  <button onClick={() => updateFilter("date_from", "")}>
+                    <i className="bi bi-x"></i>
+                  </button>
+                </span>
+              )}
+              {filters.date_to && (
+                <span className="filter-chip">
+                  To: {filters.date_to}
+                  <button onClick={() => updateFilter("date_to", "")}>
+                    <i className="bi bi-x"></i>
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+
+          <div className="table-wrap__header" style={{ borderTop: "1px solid var(--border-color)" }}>
+            <span className="panel-title">
+              <i className="bi bi-clock-history text-brand"></i>
+              Payment History
+            </span>
+            <span className="chart-card__subtitle">
+              {count} payment{count !== 1 ? "s" : ""} found
+            </span>
+          </div>
+
+          {listLoading ? (
+            <TableSkeleton rows={5} columns={13} />
+          ) : payments.length === 0 ? (
+            <div className="empty-state">
+              <i className="bi bi-cash-stack"></i>
+              <h6>No payments found</h6>
+              <p className="text-muted-soft">
+                {hasActiveFilters
+                  ? "No payments match your filters. Try adjusting your search criteria."
+                  : "No payments have been recorded yet."}
+              </p>
+            </div>
+          ) : (
+            <div className="table-wrap">
               <div className="table-responsive">
                 <table className="table table-hover mb-0">
                   <thead>
@@ -1913,23 +2007,14 @@ export default function FinancePayments() {
                         <td className="cell-mono text-brand fw-semibold">{p.admission_no}</td>
                         <td>
                           <div className="table-avatar-cell">
-                            <div className="avatar-sm">
-                              {(p.student_name || "")
-                                .split(" ")
-                                .filter(Boolean)
-                                .slice(0, 2)
-                                .map((n) => n[0])
-                                .join("")}
-                            </div>
+                            <div className="avatar-sm">{initialsOf(p.student_name)}</div>
                             <span className="cell-name">{p.student_name}</span>
                           </div>
                         </td>
                         <td className="cell-mono">{p.student_phone || <span className="cell-muted">-</span>}</td>
                         <td>{p.guardian_name || <span className="cell-muted">-</span>}</td>
                         <td className="cell-mono">{p.guardian_phone || <span className="cell-muted">-</span>}</td>
-                        <td>
-                          <span className="badge badge-neutral">{p.classroom}</span>
-                        </td>
+                        <td>{p.classroom ? <span className="chip">{p.classroom}</span> : "-"}</td>
                         <td>{p.term}</td>
                         <td className="cell-num fw-bold text-ok">KES {currency(p.amount)}</td>
                         <td>
@@ -1940,29 +2025,31 @@ export default function FinancePayments() {
                         </td>
                         <td className="cell-mono">{p.reference || <span className="cell-muted">-</span>}</td>
                         <td className="cell-muted">{p.recorded_by_name}</td>
-                        <td className="text-center">
-                          <button
-                            type="button"
-                            className="btn btn-sm btn-outline-primary btn-icon"
-                            title="Print this receipt"
-                            aria-label="Print this receipt"
-                            onClick={() => handlePrintPaymentReceipt(p)}
-                            disabled={printingReceiptId === p.id}
-                          >
-                            {printingReceiptId === p.id ? (
-                              <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                            ) : (
-                              <i className="bi bi-printer"></i>
-                            )}
-                          </button>
+                        <td>
+                          <div className="row-actions">
+                            <button
+                              type="button"
+                              className="btn btn-icon"
+                              title="Print this receipt"
+                              aria-label="Print this receipt"
+                              onClick={() => handlePrintPaymentReceipt(p)}
+                              disabled={printingReceiptId === p.id}
+                            >
+                              {printingReceiptId === p.id ? (
+                                <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                              ) : (
+                                <i className="bi bi-printer"></i>
+                              )}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {!listLoading && payments.length > 0 && (
             <Pagination
@@ -1976,35 +2063,53 @@ export default function FinancePayments() {
               totalItems={count}
             />
           )}
-        </>
+        </section>
       )}
 
       {/* ================= FINANCE TOOLS ================= */}
       {activeTab === "split" && (
-        <SplitPaymentPanel
-          onMessage={handlePanelMessage}
-          onPrint={handlePrintPaymentReceipt}
-          onChanged={() => loadPayments(1)}
-        />
+        <section className="page-card">
+          <div className="page-card__body">
+            <SplitPaymentPanel
+              onMessage={handlePanelMessage}
+              onPrint={handlePrintPaymentReceipt}
+              onChanged={() => loadPayments(1)}
+            />
+          </div>
+        </section>
       )}
 
       {activeTab === "correct" && (
-        <CorrectReceiptPanel
-          onMessage={handlePanelMessage}
-          onPrint={handlePrintPaymentReceipt}
-          onChanged={() => loadPayments(1)}
-        />
+        <section className="page-card">
+          <div className="page-card__body">
+            <CorrectReceiptPanel
+              onMessage={handlePanelMessage}
+              onPrint={handlePrintPaymentReceipt}
+              onChanged={() => loadPayments(1)}
+            />
+          </div>
+        </section>
       )}
 
-      {activeTab === "alumni" && <AlumniBalancePanel onMessage={handlePanelMessage} />}
+      {activeTab === "alumni" && (
+        <section className="page-card">
+          <div className="page-card__body">
+            <AlumniBalancePanel onMessage={handlePanelMessage} />
+          </div>
+        </section>
+      )}
 
       {activeTab === "other" && (
-        <OtherPaymentsPanel
-          onMessage={handlePanelMessage}
-          onPrintReceipt={printOtherReceipt}
-          onDownloadReceipt={downloadOtherReceipt}
-          printingId={printingOtherId}
-        />
+        <section className="page-card">
+          <div className="page-card__body">
+            <OtherPaymentsPanel
+              onMessage={handlePanelMessage}
+              onPrintReceipt={printOtherReceipt}
+              onDownloadReceipt={downloadOtherReceipt}
+              printingId={printingOtherId}
+            />
+          </div>
+        </section>
       )}
     </div>
   );

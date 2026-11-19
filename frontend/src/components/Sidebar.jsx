@@ -1,3 +1,4 @@
+// components/Sidebar.jsx
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
@@ -21,9 +22,10 @@ import { NAV_BY_ROLE } from "../config/navigation";
  *   (body.drawer-open in main.css).
  *
  * Groups with more than COLLAPSE_THRESHOLD links render as dropdowns
- * (open by default; click the header to close). The group that contains
- * the current page is always re-opened on navigation. Smaller groups
- * render as a plain section title.
+ * (open by default; click the header to close). Open groups draw a thin
+ * tree line beside their links. The group that contains the current page
+ * is always re-opened on navigation. Smaller groups render as a plain
+ * section title.
  */
 
 const COLLAPSE_THRESHOLD = 2;
@@ -213,7 +215,7 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
               <img src={logo} alt="Masomo System Logo" />
             </div>
             {showLabels && (
-              <span className="app-sidebar__brand-text">MASOMO PORTAL</span>
+              <span className="app-sidebar__brand-text">Masomo Portal</span>
             )}
           </div>
 
@@ -290,13 +292,18 @@ export default function Sidebar({ isDesktop, collapsed, mobileOpen, onClose }) {
           )}
         </nav>
 
-        {/* Footer - Branding and version only */}
+        {/* Footer - product name + version */}
         {showLabels && (
           <div className="app-sidebar__footer">
-            <div className="app-sidebar__copy">
-              Masomo Portal © {new Date().getFullYear()}
+            <span className="app-sidebar__footer-icon" aria-hidden="true">
+              <i className="bi bi-mortarboard-fill"></i>
+            </span>
+            <div className="app-sidebar__footer-text">
+              <span className="app-sidebar__copy">Masomo Portal</span>
+              <span className="app-sidebar__version">
+                v2.1.0 · © {new Date().getFullYear()}
+              </span>
             </div>
-            <div className="app-sidebar__version">v2.1.0</div>
           </div>
         )}
       </aside>

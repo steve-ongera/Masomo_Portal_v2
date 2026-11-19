@@ -80,140 +80,172 @@ export default function Login() {
   };
 
   return (
-    <div className="login-page">
-      <div className="login-card">
-        <div className="d-flex justify-content-center mb-4">
-          <img
-            src={logo}
-            alt="The Nyali School Logo"
-            style={{ width: 150, height: 150, objectFit: "contain" }}
-          />
-        </div>
+    <div className="np-login">
+      <div className="np-login__shell">
+        {/* ---------- Brand panel ---------- */}
+        <aside className="np-login__brand" aria-hidden="false">
+          <span className="np-login__orb np-login__orb--top" aria-hidden="true"></span>
+          <span className="np-login__orb np-login__orb--bottom" aria-hidden="true"></span>
 
-        <div className="login-card__brand justify-content-center">
-          <h1>The Nyali School</h1>
-        </div>
-        <p className="text-center small fw-semibold text-muted-soft mb-3" style={{ letterSpacing: "0.06em", textTransform: "uppercase" }}>
-          Masomo Portal
-        </p>
-
-        <p className="login-card__subtitle text-center">
-          {step === "credentials"
-            ? "Sign in to your school portal"
-            : "Enter the verification code sent to your registered contact"}
-        </p>
-
-        {error && (
-          <div className="alert alert-danger py-2">
-            <i className="bi bi-exclamation-circle me-1"></i> {error}
-          </div>
-        )}
-
-        {step === "credentials" ? (
-          <form onSubmit={handleCredentialsSubmit} noValidate>
-            <div className="mb-3">
-              <label className="form-label fw-semibold">Admission / Staff Number</label>
-              <div className="input-icon-group">
-                <i className="bi bi-person input-icon-leading"></i>
-                <input
-                  className="form-control"
-                  placeholder="e.g. 11871"
-                  value={username}
-                  maxLength={USERNAME_MAX_LENGTH}
-                  onChange={(e) => setUsername(e.target.value)}
-                  autoComplete="username"
-                  required
-                />
-              </div>
+          <div className="np-login__brand-inner">
+            <div className="np-login__logo">
+              <img src={logo} alt="The Nyali School Logo" />
             </div>
+            <h1 className="np-login__school">The Nyali School</h1>
+            <p className="np-login__portal">Masomo Portal</p>
+          </div>
+        </aside>
 
-            <div className="mb-3">
-              <div className="d-flex justify-content-between align-items-center">
-                <label className="form-label fw-semibold mb-0">Password</label>
-                <Link to="/forgot-password" className="small text-brand">
-                  Forgot password?
-                </Link>
+        {/* ---------- Form panel ---------- */}
+        <main className="np-login__panel">
+          <div className="np-login__panel-inner">
+            <header className="np-login__header">
+              <h2>{step === "credentials" ? "Welcome Back" : "Verify Your Identity"}</h2>
+              <p>
+                {step === "credentials"
+                  ? "Sign in to your school portal"
+                  : "Enter the verification code sent to your registered contact"}
+              </p>
+            </header>
+
+            {error && (
+              <div className="np-login__alert" role="alert">
+                <i className="bi bi-exclamation-circle"></i>
+                <span>{error}</span>
               </div>
-              <div className="input-icon-group has-toggle mt-1">
-                <i className="bi bi-lock input-icon-leading"></i>
-                <input
-                  type={showPassword ? "text" : "password"}
-                  className="form-control"
-                  placeholder="Enter your password"
-                  value={password}
-                  maxLength={128}
-                  onChange={(e) => setPassword(e.target.value)}
-                  autoComplete="current-password"
-                  required
-                />
+            )}
+
+            {step === "credentials" ? (
+              <form onSubmit={handleCredentialsSubmit} noValidate>
+                <div className="np-field">
+                  <label htmlFor="np-username" className="np-field__label">
+                    Admission / Staff Number
+                  </label>
+                  <div className="np-field__control">
+                    <i className="bi bi-person-fill np-field__icon"></i>
+                    <input
+                      id="np-username"
+                      className="np-field__input"
+                      placeholder="e.g. 11871"
+                      value={username}
+                      maxLength={USERNAME_MAX_LENGTH}
+                      onChange={(e) => setUsername(e.target.value)}
+                      autoComplete="username"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="np-field">
+                  <label htmlFor="np-password" className="np-field__label">
+                    Password
+                  </label>
+                  <div className="np-field__control">
+                    <i className="bi bi-lock-fill np-field__icon"></i>
+                    <input
+                      id="np-password"
+                      type={showPassword ? "text" : "password"}
+                      className="np-field__input np-field__input--toggle"
+                      placeholder="Enter your password"
+                      value={password}
+                      maxLength={128}
+                      onChange={(e) => setPassword(e.target.value)}
+                      autoComplete="current-password"
+                      required
+                    />
+                    <button
+                      type="button"
+                      className="np-field__toggle"
+                      onClick={() => setShowPassword(!showPassword)}
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                    >
+                      <i className={`bi bi-${showPassword ? "eye-slash" : "eye"}`}></i>
+                    </button>
+                  </div>
+                </div>
+
+                <button className="np-btn" type="submit" disabled={submitting}>
+                  {submitting ? (
+                    <>
+                      <span className="np-btn__spinner" aria-hidden="true"></span>
+                      Signing in...
+                    </>
+                  ) : (
+                    <>
+                      <i className="bi bi-box-arrow-in-right"></i>
+                      Sign In
+                    </>
+                  )}
+                </button>
+
+                <div className="np-login__links">
+                  <Link to="/forgot-password" className="np-login__link">
+                    <i className="bi bi-question-circle"></i> Forgot password?
+                  </Link>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleOtpSubmit} noValidate>
+                <p className="np-login__hint">
+                  A 6-digit code was sent to your {maskedContact}. It expires shortly, so enter it now.
+                </p>
+                <div className="np-field">
+                  <label htmlFor="np-otp" className="np-field__label">
+                    Verification Code
+                  </label>
+                  <input
+                    id="np-otp"
+                    className="np-field__input np-field__input--otp"
+                    placeholder="352092"
+                    value={otpCode}
+                    inputMode="numeric"
+                    maxLength={6}
+                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
+                    required
+                    autoFocus
+                  />
+                </div>
+                <button
+                  className="np-btn"
+                  type="submit"
+                  disabled={submitting || otpCode.length !== 6}
+                >
+                  {submitting ? (
+                    <>
+                      <span className="np-btn__spinner" aria-hidden="true"></span>
+                      Verifying...
+                    </>
+                  ) : (
+                    <>
+                      <i className="bi bi-shield-check"></i>
+                      Verify &amp; Sign In
+                    </>
+                  )}
+                </button>
                 <button
                   type="button"
-                  className="input-password-toggle"
-                  onClick={() => setShowPassword(!showPassword)}
-                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  className="np-btn-text"
+                  onClick={() => setStep("credentials")}
                 >
-                  <i className={`bi bi-${showPassword ? "eye-slash" : "eye"}`}></i>
+                  <i className="bi bi-arrow-left"></i> Back to login
                 </button>
-              </div>
-            </div>
+              </form>
+            )}
 
-            <button
-              className={`btn btn-primary w-100 btn-lg ${submitting ? "btn--loading" : ""}`}
-              type="submit"
-              disabled={submitting}
-            >
-              {submitting ? "Signing in..." : "Sign In"}
-            </button>
-          </form>
-        ) : (
-          <form onSubmit={handleOtpSubmit} noValidate>
-            <p className="small text-muted-soft mb-3">
-              A 6-digit code was sent to your {maskedContact}. It expires shortly, so enter it now.
-            </p>
-            <div className="mb-3">
-              <label className="form-label fw-semibold">Verification Code</label>
-              <input
-                className="form-control form-control-lg"
-                placeholder="352092"
-                value={otpCode}
-                inputMode="numeric"
-                maxLength={6}
-                onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))}
-                required
-                autoFocus
-                style={{ letterSpacing: "0.3em", textAlign: "center", fontFamily: "var(--font-mono)" }}
-              />
-            </div>
-            <button
-              className={`btn btn-primary w-100 btn-lg ${submitting ? "btn--loading" : ""}`}
-              type="submit"
-              disabled={submitting || otpCode.length !== 6}
-            >
-              {submitting ? "Verifying..." : "Verify & Sign In"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-link w-100 mt-2 small"
-              onClick={() => setStep("credentials")}
-            >
-              Back to login
-            </button>
-          </form>
-        )}
-
-        <div className="login-card__footer">
-          <span>
-            Masomo Portal © {new Date().getFullYear()} — developed by{" "}
-            <a
-              href="https://steveongera.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ textDecoration: "underline" }}
-            >
-              Steve Ongera
-            </a>
-          </span>
-        </div>
+            <footer className="np-login__footer">
+              <span>
+                The Nyali School © {new Date().getFullYear()}  &nbsp;|&nbsp; Developed by{" "}
+                <a
+                  href="https://steveongera.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Steve Ongera
+                </a>
+              </span>
+            </footer>
+          </div>
+        </main>
       </div>
     </div>
   );

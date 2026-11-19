@@ -305,7 +305,7 @@ export default function Navbar({ onToggleSidebar }) {
           onClick={onToggleSidebar}
           aria-label="Toggle menu"
         >
-          <i className="bi bi-list" aria-hidden="true"></i>
+          <i className="bi bi-layout-sidebar" aria-hidden="true"></i>
         </button>
 
         <nav className="app-navbar__breadcrumbs" aria-label="Breadcrumb">
@@ -354,7 +354,7 @@ export default function Navbar({ onToggleSidebar }) {
             onFocus={() => query.trim() && setShowSuggestions(true)}
             onKeyDown={handleSearchKeyDown}
           />
-          <kbd>{IS_MAC ? "⌘K" : "Ctrl K"}</kbd>
+          <kbd>{IS_MAC ? "⌘ K" : "Ctrl K"}</kbd>
         </form>
 
         {showSuggestions && query.trim() && (
@@ -386,7 +386,9 @@ export default function Navbar({ onToggleSidebar }) {
         )}
       </div>
 
-      <div ref={containerRef} className="d-flex align-items-center gap-1">
+      {/* Right-hand group. Must stay the LAST child of <header>:
+          main.css centres the search box using `.app-navbar > :last-child`. */}
+      <div ref={containerRef} className="app-navbar__actions">
         {/* Search toggle (phones only - hidden by CSS from 768px up) */}
         <button
           type="button"
@@ -550,6 +552,8 @@ export default function Navbar({ onToggleSidebar }) {
             </div>
           )}
         </div>
+
+        <span className="app-navbar__divider" aria-hidden="true"></span>
 
         {/* Profile */}
         <div className="position-relative">

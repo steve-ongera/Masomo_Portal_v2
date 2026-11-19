@@ -138,6 +138,12 @@ const TABS = [
   { key: "bulk", label: "Bulk Create", icon: "bi-grid-3x3-gap" },
 ];
 
+// Tabs shown INSIDE the View modal - only one table is visible at a time.
+const VIEW_TABS = [
+  { key: "students", label: "Students", icon: "bi-people" },
+  { key: "results", label: "Ranking & Report Cards", icon: "bi-bar-chart-line" },
+];
+
 const initials = (name, fallback) =>
   (name || "").split(" ").filter(Boolean).slice(0, 2).map((n) => n[0]).join("") || fallback;
 
@@ -187,6 +193,9 @@ export default function AdminClassrooms() {
   // size that fills the whole laptop window / mobile screen. Purely a
   // display preference - resets to normal every time the modal is opened.
   const [modalFullscreen, setModalFullscreen] = useState(false);
+  // Which tab is showing inside the View modal ("students" | "results").
+  // Resets to "students" every time the modal is opened.
+  const [viewTab, setViewTab] = useState("students");
 
   // ---- View modal: term/exam selectors + ranking/results + report cards ----
   const [viewTerms, setViewTerms] = useState([]);
@@ -397,6 +406,7 @@ export default function AdminClassrooms() {
     setViewClassroom(classroom);
     setShowViewModal(true);
     setModalFullscreen(false);
+    setViewTab("students");
     setViewStudents([]);
     setViewStudentsLoading(true);
     setViewResults(null);
@@ -1917,7 +1927,7 @@ export default function AdminClassrooms() {
         </div>
       )}
 
-      {/* ---------------- VIEW MODAL (details + roster + ranking/results + report cards) ---------------- */}
+      {/* ---------------- VIEW MODAL (details + TABS: students | ranking & report cards) ---------------- */}
       <Modal
         show={showViewModal}
         onClose={closeViewModal}
@@ -1926,10 +1936,9 @@ export default function AdminClassrooms() {
       >
         {viewClassroom && (
           <div>
-            {/* Modal header strip with logo + class name + fullscreen toggle */}
+            {/* Modal header strip with class name + fullscreen toggle */}
             <div className="class-hero">
               <div className="d-flex align-items-center gap-3 min-w-0">
-               
                 <div className="min-w-0">
                   <div className="class-hero__title">
                     {viewClassroom.grade_level_name} {viewClassroom.stream_name}
@@ -1948,6 +1957,8 @@ export default function AdminClassrooms() {
                     {viewClassroom.academic_year_is_current ? " · current year" : ""}
                     {" · "}
                     {viewClassroom.student_count || 0} student{(viewClassroom.student_count || 0) !== 1 ? "s" : ""}
+                    {" · "}
+                    {viewClassroom.class_teacher_name || "No class teacher"}
                   </div>
                 </div>
               </div>
@@ -1962,321 +1973,314 @@ export default function AdminClassrooms() {
               </button>
             </div>
 
-            <div className="row g-x-3 mb-2">
-              <div className="col-12 col-md-6">
-                <div className="profile-info-row"><span>Grade</span><span>{viewClassroom.grade_level_name}</span></div>
-              </div>
-              <div className="col-12 col-md-6">
-                <div className="profile-info-row"><span>Stream</span><span>{viewClassroom.stream_name}</span></div>
-              </div>
-              <div className="col-12 col-md-6">
-                <div className="profile-info-row"><span>Academic Year</span><span>{viewClassroom.academic_year_year}</span></div>
-              </div>
-              <div className="col-12 col-md-6">
-                <div className="profile-info-row"><span>Status</span><span>{viewClassroom.academic_year_is_current ? "Current year" : "Past/Future year"}</span></div>
-              </div>
-              <div className="col-12 col-md-6">
-                <div className="profile-info-row"><span>Student Count</span><span>{viewClassroom.student_count || 0}</span></div>
-              </div>
-              <div className="col-12 col-md-6">
-                <div className="profile-info-row"><span>Class Teacher</span><span>{viewClassroom.class_teacher_name || "Unassigned"}</span></div>
-              </div>
-              {viewClassroom.is_promoted && (
-                <div className="col-12">
-                  <div className="profile-info-row">
-                    <span>Promotion</span>
-                    <span>
-                      {viewClassroom.promoted_to_label
-                        ? `Promoted to ${viewClassroom.promoted_to_label}`
-                        : "Promoted"}
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <hr className="divider" />
-
-            <div className="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-              <span className="chart-card__title">
-                <i className="bi bi-people me-2 text-brand"></i>
-                Students in this Class
-              </span>
-              <div className="d-flex gap-2">
-                <button
-                  className="btn btn-sm btn-outline-success"
-                  onClick={handleDownloadRoster}
-                  disabled={viewStudentsLoading || viewStudents.length === 0}
-                >
-                  <i className="bi bi-download"></i>
-                  Download CSV
-                </button>
-                <button
-                  className="btn btn-sm btn-outline-primary"
-                  onClick={handleDownloadRosterPdf}
-                  disabled={viewStudentsLoading || viewStudents.length === 0 || downloadingRosterPdf}
-                >
-                  {downloadingRosterPdf ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                      Preparing...
-                    </>
-                  ) : (
-                    <>
-                      <i className="bi bi-file-earmark-pdf"></i>
-                      Download PDF
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-
             {viewClassroom.is_promoted && (
               <div className="alert alert-primary mb-3">
                 <i className="bi bi-info-circle me-1"></i>
                 This class has been promoted
                 {viewClassroom.promoted_to_label ? ` to ${viewClassroom.promoted_to_label}` : ""}.
-                The list below is the <strong>historical roster</strong> — who was in this
+                The student list is the <strong>historical roster</strong> — who was in this
                 class in {viewClassroom.academic_year_year} — not who's currently active here.
                 Their {viewClassroom.academic_year_year} marks, ranking and report cards are
-                still available below.
+                still available in the <strong>Ranking &amp; Report Cards</strong> tab.
               </div>
             )}
 
-            {viewStudentsLoading ? (
-              <div className="text-center py-4">
-                <span className="spinner-border spinner-border-sm me-2"></span>
-                Loading students...
-              </div>
-            ) : viewStudents.length === 0 ? (
-              <div className="empty-state">
-                <i className="bi bi-people"></i>
-                <h6>No active students</h6>
-                <p className="text-muted-soft mb-0">No active students in this classroom yet.</p>
-              </div>
-            ) : (
-              <div className="table-wrap">
-                <div className="table-responsive modal-table-scroll">
-                  <table className="table table-sm table-hover mb-0">
-                    <thead>
-                      <tr>
-                        <th>Admission No</th>
-                        <th>Name</th>
-                        <th>Status</th>
-                        <th>Gender</th>
-                        <th>DOB</th>
-                        <th>Email</th>
-                        <th>Phone</th>
-                        <th>National ID</th>
-                        <th>Parent/Guardian</th>
-                        <th>Parent Phone</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {viewStudents.map((s) => {
-                        const primaryGuardian = s.guardians?.[0];
-                        return (
-                          <tr key={s.id}>
-                            <td className="cell-mono text-brand fw-semibold">{s.admission_no}</td>
-                            <td>
-                              <div className="table-avatar-cell">
-                                <div className="avatar-sm">{initials(s.full_name, "S")}</div>
-                                <span className="cell-name">{s.full_name}</span>
-                              </div>
-                            </td>
-                            <td>
-                              {s.enrollment_status_display ? (
-                                <span className={`badge ${s.enrollment_status === "ACTIVE" ? "badge-success" : "badge-neutral"}`}>
-                                  {s.enrollment_status_display}
-                                </span>
-                              ) : "-"}
-                            </td>
-                            <td>
-                              <span className={`badge ${s.gender === "M" ? "badge-blue" : "badge-gold"}`}>
-                                {s.gender === "M" ? "Male" : "Female"}
-                              </span>
-                            </td>
-                            <td className="cell-mono">{s.date_of_birth || "-"}</td>
-                            <td>{s.email || "-"}</td>
-                            <td className="cell-mono">{s.phone_number || "-"}</td>
-                            <td className="cell-mono">{s.national_id || "-"}</td>
-                            <td>
-                              {primaryGuardian
-                                ? `${primaryGuardian.name} (${primaryGuardian.relationship})`
-                                : "-"}
-                            </td>
-                            <td className="cell-mono">{primaryGuardian?.phone_number || "-"}</td>
+            {/* ---------------- VIEW MODAL TABS ---------------- */}
+            <ul className="nav nav-tabs mb-3" role="tablist">
+              {VIEW_TABS.map((tab) => (
+                <li className="nav-item" role="presentation" key={tab.key}>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={viewTab === tab.key}
+                    className={`nav-link${viewTab === tab.key ? " active" : ""}`}
+                    onClick={() => setViewTab(tab.key)}
+                  >
+                    <i className={`bi ${tab.icon} me-2`}></i>
+                    {tab.label}
+                    {tab.key === "students" && (
+                      <span className="badge badge-neutral ms-2">{viewStudents.length}</span>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            {/* ---------------- TAB: STUDENTS (roster table) ---------------- */}
+            {viewTab === "students" && (
+              <div role="tabpanel">
+                <div className="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                  <span className="chart-card__title">
+                    <i className="bi bi-people me-2 text-brand"></i>
+                    Students in this Class
+                  </span>
+                  <div className="d-flex gap-2">
+                    <button
+                      className="btn btn-sm btn-outline-success"
+                      onClick={handleDownloadRoster}
+                      disabled={viewStudentsLoading || viewStudents.length === 0}
+                    >
+                      <i className="bi bi-download"></i>
+                      Download CSV
+                    </button>
+                    <button
+                      className="btn btn-sm btn-outline-primary"
+                      onClick={handleDownloadRosterPdf}
+                      disabled={viewStudentsLoading || viewStudents.length === 0 || downloadingRosterPdf}
+                    >
+                      {downloadingRosterPdf ? (
+                        <>
+                          <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                          Preparing...
+                        </>
+                      ) : (
+                        <>
+                          <i className="bi bi-file-earmark-pdf"></i>
+                          Download PDF
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {viewStudentsLoading ? (
+                  <div className="text-center py-4">
+                    <span className="spinner-border spinner-border-sm me-2"></span>
+                    Loading students...
+                  </div>
+                ) : viewStudents.length === 0 ? (
+                  <div className="empty-state">
+                    <i className="bi bi-people"></i>
+                    <h6>No active students</h6>
+                    <p className="text-muted-soft mb-0">No active students in this classroom yet.</p>
+                  </div>
+                ) : (
+                  <div className="table-wrap">
+                    <div className="table-responsive modal-table-scroll">
+                      <table className="table table-sm table-hover mb-0">
+                        <thead>
+                          <tr>
+                            <th>Admission No</th>
+                            <th>Name</th>
+                            <th>Status</th>
+                            <th>Gender</th>
+                            <th>DOB</th>
+                            <th>Email</th>
+                            <th>Phone</th>
+                            <th>National ID</th>
+                            <th>Parent/Guardian</th>
+                            <th>Parent Phone</th>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                        </thead>
+                        <tbody>
+                          {viewStudents.map((s) => {
+                            const primaryGuardian = s.guardians?.[0];
+                            return (
+                              <tr key={s.id}>
+                                <td className="cell-mono text-brand fw-semibold">{s.admission_no}</td>
+                                <td>
+                                  <div className="table-avatar-cell">
+                                    <div className="avatar-sm">{initials(s.full_name, "S")}</div>
+                                    <span className="cell-name">{s.full_name}</span>
+                                  </div>
+                                </td>
+                                <td>
+                                  {s.enrollment_status_display ? (
+                                    <span className={`badge ${s.enrollment_status === "ACTIVE" ? "badge-success" : "badge-neutral"}`}>
+                                      {s.enrollment_status_display}
+                                    </span>
+                                  ) : "-"}
+                                </td>
+                                <td>
+                                  <span className={`badge ${s.gender === "M" ? "badge-blue" : "badge-gold"}`}>
+                                    {s.gender === "M" ? "Male" : "Female"}
+                                  </span>
+                                </td>
+                                <td className="cell-mono">{s.date_of_birth || "-"}</td>
+                                <td>{s.email || "-"}</td>
+                                <td className="cell-mono">{s.phone_number || "-"}</td>
+                                <td className="cell-mono">{s.national_id || "-"}</td>
+                                <td>
+                                  {primaryGuardian
+                                    ? `${primaryGuardian.name} (${primaryGuardian.relationship})`
+                                    : "-"}
+                                </td>
+                                <td className="cell-mono">{primaryGuardian?.phone_number || "-"}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
-            <hr className="divider" />
-
-            {/* ---------------- RANKING / RESULTS + REPORT CARDS ---------------- */}
-            <div className="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-              <span className="chart-card__title">
-                <i className="bi bi-bar-chart-line me-2 text-brand"></i>
-                Class Ranking &amp; Report Cards
-              </span>
-              <div className="d-flex gap-2 align-items-center flex-wrap">
-                <select
-                  className="form-select form-select-sm w-auto"
-                  aria-label="Term"
-                  value={viewSelectedTerm}
-                  onChange={(e) => handleViewTermChange(e.target.value)}
-                >
-                  <option value="">Select term...</option>
-                  {viewTerms.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.get_term_number_display || `Term ${t.term_number}`}
-                      {t.is_current ? " (current)" : ""}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="form-select form-select-sm w-auto"
-                  aria-label="Exam"
-                  value={viewSelectedExam}
-                  onChange={(e) => handleViewExamChange(e.target.value)}
-                  disabled={!viewSelectedTerm || viewResultsLoading}
-                  title="Filter ranking to a single exam, or combine every exam this term"
-                >
-                  <option value="">All Exams (combined)</option>
-                  {viewExams.map((ex) => (
-                    <option key={ex.id} value={ex.id}>
-                      {ex.name} ({ex.exam_type_name}){!ex.is_published ? " — unpublished" : ""}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="btn btn-sm btn-outline-primary"
-                  onClick={() => requestPrint("ALL")}
-                  disabled={!viewResults || !viewResults.results?.length || printingReportCard === "ALL"}
-                >
-                  {printingReportCard === "ALL" ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm"></span>
-                      Preparing...
-                    </>
-                  ) : (
-                    <>
-                      <i className="bi bi-printer"></i>
-                      Print All Report Cards
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            {viewSelectedTerm && !viewResultsLoading && (
-              <p className="form-text-hint mb-2">
-                Ranking based on: <strong>{currentExamLabel()}</strong>
-                {viewExams.length === 0 && " — no exams configured yet for this grade/term."}
-                {viewClassroom.is_promoted && viewExams.length > 0 &&
-                  ` — showing the ${viewClassroom.academic_year_year} cohort, including students since promoted.`}
-                {viewResults?.overall_size
-                  ? ` Overall position is across all ${viewClassroom.grade_level_name} streams (${viewResults.overall_size} students).`
-                  : ""}
-              </p>
-            )}
-
-            {viewResultsLoading ? (
-              <div className="text-center py-4">
-                <span className="spinner-border spinner-border-sm me-2"></span>
-                Loading results...
-              </div>
-            ) : !viewSelectedTerm ? (
-              <div className="empty-state">
-                <i className="bi bi-calendar-week"></i>
-                <h6>No term selected</h6>
-                <p className="text-muted-soft mb-0">Select a term to view class ranking and results.</p>
-              </div>
-            ) : !viewResults || !viewResults.results?.length ? (
-              <div className="empty-state">
-                <i className="bi bi-bar-chart"></i>
-                <h6>No results</h6>
-                <p className="text-muted-soft mb-0">No students found for this classroom/term.</p>
-              </div>
-            ) : (
-              <div className="table-wrap">
-                <div className="table-responsive modal-table-scroll">
-                  <table className="table table-sm table-hover mb-0">
-                    <thead>
-                      <tr>
-                        <th style={{ width: "60px" }}>Class Pos</th>
-                        <th style={{ width: "70px" }}>Overall Pos</th>
-                        <th>Admission No</th>
-                        <th>Name</th>
-                        <th>Status</th>
-                        <th>Average %</th>
-                        <th>Total Marks</th>
-                        <th>Grade</th>
-                        <th>Points</th>
-                        <th>Remark</th>
-                        <th>Fee Balance</th>
-                        <th style={{ width: "90px" }}>Report</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {viewResults.results.map((r) => (
-                        <tr key={r.enrollment_id}>
-                          <td className="cell-mono fw-bold">{r.class_position ?? "-"}</td>
-                          <td className="cell-mono fw-bold">{r.overall_position ?? "-"}</td>
-                          <td className="cell-mono text-brand fw-semibold">{r.admission_no}</td>
-                          <td>
-                            <div className="table-avatar-cell">
-                              <div className="avatar-sm">{initials(r.full_name, "S")}</div>
-                              <span className="cell-name">{r.full_name}</span>
-                            </div>
-                          </td>
-                          <td>
-                            {r.enrollment_status_display ? (
-                              <span className={`badge ${r.enrollment_status === "ACTIVE" ? "badge-success" : "badge-neutral"}`}>
-                                {r.enrollment_status_display}
-                              </span>
-                            ) : "-"}
-                          </td>
-                          <td className="cell-mono">{r.average_marks != null ? `${r.average_marks}%` : "-"}</td>
-                          <td className="cell-mono">{r.total_marks != null ? r.total_marks : "-"}</td>
-                          <td className="fw-bold">{r.overall_grade || "-"}</td>
-                          <td className="cell-mono">{r.average_points ?? "-"}</td>
-                          <td>
-                            {r.has_marks ? (
-                              <span className="badge badge-neutral">{r.remark}</span>
-                            ) : (
-                              <span className="cell-muted">{r.remark}</span>
-                            )}
-                          </td>
-                          <td>
-                            <span className={`badge ${feeBadgeClass(r.fee_balance)}`} title={feeLabel(r.fee_balance)}>
-                              {feeLabel(r.fee_balance)}
-                            </span>
-                          </td>
-                          <td>
-                            <button
-                              className="btn btn-sm btn-secondary btn-icon"
-                              title="Print report card"
-                              aria-label="Print report card"
-                              onClick={() => requestPrint(r)}
-                              disabled={printingReportCard === r.enrollment_id || printingReportCard === "ALL"}
-                            >
-                              {printingReportCard === r.enrollment_id ? (
-                                <span className="spinner-border spinner-border-sm"></span>
-                              ) : (
-                                <i className="bi bi-file-earmark-pdf"></i>
-                              )}
-                            </button>
-                          </td>
-                        </tr>
+            {/* ---------------- TAB: RANKING / RESULTS + REPORT CARDS ---------------- */}
+            {viewTab === "results" && (
+              <div role="tabpanel">
+                <div className="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                  <span className="chart-card__title">
+                    <i className="bi bi-bar-chart-line me-2 text-brand"></i>
+                    Class Ranking &amp; Report Cards
+                  </span>
+                  <div className="d-flex gap-2 align-items-center flex-wrap">
+                    <select
+                      className="form-select form-select-sm w-auto"
+                      aria-label="Term"
+                      value={viewSelectedTerm}
+                      onChange={(e) => handleViewTermChange(e.target.value)}
+                    >
+                      <option value="">Select term...</option>
+                      {viewTerms.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.get_term_number_display || `Term ${t.term_number}`}
+                          {t.is_current ? " (current)" : ""}
+                        </option>
                       ))}
-                    </tbody>
-                  </table>
+                    </select>
+                    <select
+                      className="form-select form-select-sm w-auto"
+                      aria-label="Exam"
+                      value={viewSelectedExam}
+                      onChange={(e) => handleViewExamChange(e.target.value)}
+                      disabled={!viewSelectedTerm || viewResultsLoading}
+                      title="Filter ranking to a single exam, or combine every exam this term"
+                    >
+                      <option value="">All Exams (combined)</option>
+                      {viewExams.map((ex) => (
+                        <option key={ex.id} value={ex.id}>
+                          {ex.name} ({ex.exam_type_name}){!ex.is_published ? " — unpublished" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="btn btn-sm btn-outline-primary"
+                      onClick={() => requestPrint("ALL")}
+                      disabled={!viewResults || !viewResults.results?.length || printingReportCard === "ALL"}
+                    >
+                      {printingReportCard === "ALL" ? (
+                        <>
+                          <span className="spinner-border spinner-border-sm"></span>
+                          Preparing...
+                        </>
+                      ) : (
+                        <>
+                          <i className="bi bi-printer"></i>
+                          Print All Report Cards
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
+
+                {viewSelectedTerm && !viewResultsLoading && (
+                  <p className="form-text-hint mb-2">
+                    Ranking based on: <strong>{currentExamLabel()}</strong>
+                    {viewExams.length === 0 && " — no exams configured yet for this grade/term."}
+                    {viewClassroom.is_promoted && viewExams.length > 0 &&
+                      ` — showing the ${viewClassroom.academic_year_year} cohort, including students since promoted.`}
+                    {viewResults?.overall_size
+                      ? ` Overall position is across all ${viewClassroom.grade_level_name} streams (${viewResults.overall_size} students).`
+                      : ""}
+                  </p>
+                )}
+
+                {viewResultsLoading ? (
+                  <div className="text-center py-4">
+                    <span className="spinner-border spinner-border-sm me-2"></span>
+                    Loading results...
+                  </div>
+                ) : !viewSelectedTerm ? (
+                  <div className="empty-state">
+                    <i className="bi bi-calendar-week"></i>
+                    <h6>No term selected</h6>
+                    <p className="text-muted-soft mb-0">Select a term to view class ranking and results.</p>
+                  </div>
+                ) : !viewResults || !viewResults.results?.length ? (
+                  <div className="empty-state">
+                    <i className="bi bi-bar-chart"></i>
+                    <h6>No results</h6>
+                    <p className="text-muted-soft mb-0">No students found for this classroom/term.</p>
+                  </div>
+                ) : (
+                  <div className="table-wrap">
+                    <div className="table-responsive modal-table-scroll">
+                      <table className="table table-sm table-hover mb-0">
+                        <thead>
+                          <tr>
+                            <th style={{ width: "60px" }}>Class Pos</th>
+                            <th style={{ width: "70px" }}>Overall Pos</th>
+                            <th>Admission No</th>
+                            <th>Name</th>
+                            <th>Status</th>
+                            <th>Average %</th>
+                            <th>Total Marks</th>
+                            <th>Grade</th>
+                            <th>Points</th>
+                            <th>Remark</th>
+                            <th>Fee Balance</th>
+                            <th style={{ width: "90px" }}>Report</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {viewResults.results.map((r) => (
+                            <tr key={r.enrollment_id}>
+                              <td className="cell-mono fw-bold">{r.class_position ?? "-"}</td>
+                              <td className="cell-mono fw-bold">{r.overall_position ?? "-"}</td>
+                              <td className="cell-mono text-brand fw-semibold">{r.admission_no}</td>
+                              <td>
+                                <div className="table-avatar-cell">
+                                  <div className="avatar-sm">{initials(r.full_name, "S")}</div>
+                                  <span className="cell-name">{r.full_name}</span>
+                                </div>
+                              </td>
+                              <td>
+                                {r.enrollment_status_display ? (
+                                  <span className={`badge ${r.enrollment_status === "ACTIVE" ? "badge-success" : "badge-neutral"}`}>
+                                    {r.enrollment_status_display}
+                                  </span>
+                                ) : "-"}
+                              </td>
+                              <td className="cell-mono">{r.average_marks != null ? `${r.average_marks}%` : "-"}</td>
+                              <td className="cell-mono">{r.total_marks != null ? r.total_marks : "-"}</td>
+                              <td className="fw-bold">{r.overall_grade || "-"}</td>
+                              <td className="cell-mono">{r.average_points ?? "-"}</td>
+                              <td>
+                                {r.has_marks ? (
+                                  <span className="badge badge-neutral">{r.remark}</span>
+                                ) : (
+                                  <span className="cell-muted">{r.remark}</span>
+                                )}
+                              </td>
+                              <td>
+                                <span className={`badge ${feeBadgeClass(r.fee_balance)}`} title={feeLabel(r.fee_balance)}>
+                                  {feeLabel(r.fee_balance)}
+                                </span>
+                              </td>
+                              <td>
+                                <button
+                                  className="btn btn-sm btn-secondary btn-icon"
+                                  title="Print report card"
+                                  aria-label="Print report card"
+                                  onClick={() => requestPrint(r)}
+                                  disabled={printingReportCard === r.enrollment_id || printingReportCard === "ALL"}
+                                >
+                                  {printingReportCard === r.enrollment_id ? (
+                                    <span className="spinner-border spinner-border-sm"></span>
+                                  ) : (
+                                    <i className="bi bi-file-earmark-pdf"></i>
+                                  )}
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

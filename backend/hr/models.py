@@ -119,6 +119,7 @@ class LeaveRequest(models.Model):
         PENDING = "PENDING", "Pending"
         APPROVED = "APPROVED", "Approved"
         REJECTED = "REJECTED", "Rejected"
+        CANCELLED = "CANCELLED", "Cancelled"
 
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="leave_requests")
     leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, related_name="requests")

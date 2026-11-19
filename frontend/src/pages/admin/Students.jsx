@@ -1,5 +1,6 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { studentsApi, academicsApi, authApi, admissionFeeApi } from "../../services/api";
+import { studentIdApi } from "../../services/studentIdApi";
 import TableSkeleton from "../../components/TableSkeleton";
 import Pagination from "../../components/Pagination";
 import Modal from "../../components/Modal";
@@ -28,7 +29,83 @@ const emptyFilters = {
   academic_year: "", grade_level: "", classroom_id: "",
 };
 
+const MAX_PHOTO_BYTES = 3 * 1024 * 1024; // matches the ID card backend limit (3 MB)
+
 const kes = (n) => `KES ${Number(n).toLocaleString("en-KE", { maximumFractionDigits: 2 })}`;
+
+// ---------------------------------------------------------------------------
+// Student photos for the list.
+// The students list API doesn't return a photo, so each avatar asks the ID card
+// app for it (studentIdApi.profile -> photo_url). Results are cached for the
+// session and requests are limited to a few at a time, so a page of 25-100
+// students doesn't flood the server. No photo (or no access) = initials.
+// ---------------------------------------------------------------------------
+const MAX_PHOTO_REQUESTS = 6;
+const photoCache = new Map(); // studentId -> url | null
+const photoInflight = new Map(); // studentId -> Promise
+const photoQueue = [];
+let photoActive = 0;
+
+const runLimited = (task) =>
+  new Promise((resolve, reject) => {
+    const run = () => {
+      photoActive += 1;
+      task()
+        .then(resolve, reject)
+        .finally(() => {
+          photoActive -= 1;
+          const next = photoQueue.shift();
+          if (next) next();
+        });
+    };
+    if (photoActive < MAX_PHOTO_REQUESTS) run();
+    else photoQueue.push(run);
+  });
+
+const fetchPhotoUrl = (id) => {
+  if (photoCache.has(id)) return Promise.resolve(photoCache.get(id));
+  if (photoInflight.has(id)) return photoInflight.get(id);
+  const p = runLimited(() => studentIdApi.profile(id))
+    .then(({ data }) => {
+      const url = data?.photo_url || null;
+      photoCache.set(id, url);
+      return url;
+    })
+    .catch(() => null) // not cached, so a later visit can try again
+    .finally(() => photoInflight.delete(id));
+  photoInflight.set(id, p);
+  return p;
+};
+
+const initialsOf = (name) =>
+  (name || "").split(" ").filter(Boolean).slice(0, 2).map((n) => n[0]).join("").toUpperCase();
+
+function StudentAvatar({ studentId, name, tick }) {
+  const [url, setUrl] = useState(() => photoCache.get(studentId) ?? null);
+  const [broken, setBroken] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBroken(false);
+    fetchPhotoUrl(studentId).then((u) => { if (!cancelled) setUrl(u); });
+    return () => { cancelled = true; };
+  }, [studentId, tick]);
+
+  return (
+    <div className="avatar-sm" style={{ overflow: "hidden" }}>
+      {url && !broken ? (
+        <img
+          src={url}
+          alt=""
+          onError={() => setBroken(true)}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+        />
+      ) : (
+        initialsOf(name) || <i className="bi bi-person"></i>
+      )}
+    </div>
+  );
+}
 
 export default function AdminStudents() {
   const [students, setStudents] = useState([]);
@@ -68,6 +145,40 @@ export default function AdminStudents() {
   const [addForm, setAddForm] = useState(emptyAddForm);
   const [addSaving, setAddSaving] = useState(false);
 
+  // Photo box in the admit form. The chosen picture is previewed here and,
+  // once the student has been admitted, uploaded to the ID card app
+  // (studentIdApi.saveProfile -> StudentIDProfile.photo). The admit API itself
+  // has no photo field, so this is a second request made right after admission.
+  const [addPhoto, setAddPhoto] = useState(null); // { url, name, file }
+  const addPhotoRef = useRef(null);
+
+  const clearAddPhoto = () => {
+    setAddPhoto((prev) => {
+      if (prev?.url) URL.revokeObjectURL(prev.url);
+      return null;
+    });
+  };
+
+  const pickAddPhoto = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setMessage("The photo must be an image file.");
+      setMessageType("danger");
+      return;
+    }
+    if (file.size > MAX_PHOTO_BYTES) {
+      setMessage("The photo must be smaller than 3 MB.");
+      setMessageType("danger");
+      return;
+    }
+    setAddPhoto((prev) => {
+      if (prev?.url) URL.revokeObjectURL(prev.url);
+      return { url: URL.createObjectURL(file), name: file.name, file };
+    });
+  };
+
   // ---- Admission term fee (optional pro-rating for students joining mid-term) ----
   const [feePreview, setFeePreview] = useState(null);
   const [feeLoading, setFeeLoading] = useState(false);
@@ -89,6 +200,9 @@ export default function AdminStudents() {
 
   // ---- Student 360 profile modal (replaces the old View modal) ----
   const [profileId, setProfileId] = useState(null);
+  // Bumped when a profile modal closes so that student's list photo is re-fetched
+  // (the photo may have been changed from the camera button in the profile).
+  const [photoTick, setPhotoTick] = useState(0);
 
   // ---- Edit modal ----
   const [showEditModal, setShowEditModal] = useState(false);
@@ -261,6 +375,7 @@ export default function AdminStudents() {
   const closeAddModal = () => {
     setShowAddModal(false);
     resetFeeState();
+    clearAddPhoto();
   };
 
   // ---------------- ADD ----------------
@@ -311,13 +426,39 @@ export default function AdminStudents() {
         }
       }
 
+      // Save the photo to the ID card profile. A failure here never undoes the admission.
+      let photoNote = "";
+      let photoFailed = false;
+      if (addPhoto?.file) {
+        try {
+          let studentId = data.id;
+          if (!studentId) {
+            // Fallback if the admit response doesn't include the student id.
+            const { data: found } = await studentsApi.list({ search: data.admission_no });
+            studentId = (found.results ?? found).find((s) => s.admission_no === data.admission_no)?.id;
+          }
+          if (!studentId) throw new Error("Student not found");
+          const fd = new FormData();
+          fd.append("photo", addPhoto.file);
+          const { data: saved } = await studentIdApi.saveProfile(studentId, fd);
+          photoCache.set(studentId, saved?.photo_url || null);
+          photoNote = " — photo saved to the ID card profile";
+        } catch (photoErr) {
+          photoFailed = true;
+          photoNote =
+            ` — BUT the photo could not be saved: ${photoErr.response?.data?.detail || "upload failed"}. ` +
+            `Open the student's profile and use the camera button to add it.`;
+        }
+      }
+
       setMessage(
         `Admitted successfully. Admission No / login username: ${data.admission_no}` +
         (data.current_classroom ? ` — enrolled in ${data.current_classroom}` : "") +
         (data.guardian ? ` — guardian ${data.guardian.name} linked${data.guardian.email ? ` (${data.guardian.email})` : ""}` : "") +
-        feeNote
+        feeNote +
+        photoNote
       );
-      setMessageType(feeFailed ? "warning" : "success");
+      setMessageType(feeFailed || photoFailed ? "warning" : "success");
       closeAddModal();
       setAddForm(emptyAddForm);
       setCurrentPage(1);
@@ -440,12 +581,18 @@ export default function AdminStudents() {
     }
   };
 
+  const addInitials = `${addForm.first_name[0] || ""}${addForm.last_name[0] || ""}`.toUpperCase();
+
   return (
     <div>
+      {/* ---------- Page header: icon tile + title + actions ---------- */}
       <div className="page-header">
-        <div>
-          <h1 className="page-title">Students</h1>
-          <p className="page-subtitle">Manage all students across the school</p>
+        <div className="page-header__lead">
+          <span className="page-header__icon" aria-hidden="true"><i className="bi bi-people"></i></span>
+          <div className="page-header__text">
+            <h1 className="page-title">Students</h1>
+            <p className="page-subtitle">Manage all students across the school</p>
+          </div>
         </div>
         <div className="page-header__actions">
           <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
@@ -462,152 +609,160 @@ export default function AdminStudents() {
         </div>
       )}
 
-      <div className="table-wrap">
-        <div className="table-wrap__header flex-column align-items-stretch gap-3">
-          {/* Search + all filters share one toolbar; it wraps on small screens */}
-          <div className="toolbar mb-0">
-            <div className="toolbar__search">
-              <i className="bi bi-search"></i>
-              <input
-                type="text"
-                className="form-control"
-                placeholder="Search name / adm no..."
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-              />
-            </div>
-            <select
-              className="form-select w-auto"
-              value={filters.gender}
-              onChange={(e) => updateFilter({ gender: e.target.value })}
-              aria-label="Gender"
-            >
-              <option value="">Gender</option>
-              <option value="M">Male</option>
-              <option value="F">Female</option>
-            </select>
-            <select
-              className="form-select w-auto"
-              value={filters.curriculum_type}
-              onChange={(e) => updateFilter({ curriculum_type: e.target.value })}
-              aria-label="Curriculum"
-            >
-              <option value="">Curriculum</option>
-              <option value="CBC">CBC</option>
-              <option value="8-4-4">8-4-4</option>
-            </select>
-            <select
-              className="form-select w-auto"
-              value={filters.status}
-              onChange={(e) => updateFilter({ status: e.target.value })}
-              aria-label="Status"
-            >
-              <option value="">Status</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
-            <select
-              className="form-select w-auto"
-              value={filters.academic_year}
-              onChange={(e) => updateFilter({ academic_year: e.target.value })}
-              aria-label="Academic year"
-            >
-              <option value="">Year</option>
-              {academicYearOptions.map((year) => (
-                <option key={year} value={year}>{year}</option>
-              ))}
-            </select>
-            <select
-              className="form-select w-auto"
-              value={filters.grade_level}
-              onChange={(e) => updateFilter({ grade_level: e.target.value })}
-              aria-label="Grade"
-            >
-              <option value="">Grade</option>
-              {gradeLevelOptions.map(([id, name]) => (
-                <option key={id} value={id}>{name}</option>
-              ))}
-            </select>
-            <select
-              className="form-select w-auto"
-              value={filters.classroom_id}
-              onChange={(e) => updateFilter({ classroom_id: e.target.value })}
-              aria-label="Class"
-            >
-              <option value="">Class</option>
-              {classroomOptions.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.grade_level_name} {c.stream_name}
-                  {!filters.academic_year ? ` (${c.academic_year_year})` : ""}
-                </option>
-              ))}
-            </select>
-            {hasActiveFilters && (
-              <button className="btn btn-sm btn-light" onClick={clearFilters}>
-                <i className="bi bi-x-lg"></i> Clear
+      {/* ---------- One white card: search, filters, table, pagination ---------- */}
+      <section className="page-card">
+        <div className="search-bar">
+          <div className="search-bar__field">
+            <i className="bi bi-search" aria-hidden="true"></i>
+            <input
+              type="text"
+              className="form-control"
+              placeholder="Search by name or admission number..."
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              aria-label="Search students"
+            />
+            {searchInput && (
+              <button type="button" className="search-bar__clear" onClick={() => setSearchInput("")} aria-label="Clear search">
+                <i className="bi bi-x-lg"></i>
               </button>
             )}
           </div>
-
           {hasActiveFilters && (
-            <div className="d-flex flex-wrap gap-1">
-              {searchQuery && (
-                <span className="filter-chip">
-                  Search: "{searchQuery}"
-                  <button onClick={() => setSearchInput("")}><i className="bi bi-x"></i></button>
-                </span>
-              )}
-              {filters.gender && (
-                <span className="filter-chip">
-                  Gender: {filters.gender === "M" ? "Male" : "Female"}
-                  <button onClick={() => updateFilter({ gender: "" })}><i className="bi bi-x"></i></button>
-                </span>
-              )}
-              {filters.curriculum_type && (
-                <span className="filter-chip">
-                  Curriculum: {filters.curriculum_type}
-                  <button onClick={() => updateFilter({ curriculum_type: "" })}><i className="bi bi-x"></i></button>
-                </span>
-              )}
-              {filters.status && (
-                <span className="filter-chip">
-                  Status: {filters.status}
-                  <button onClick={() => updateFilter({ status: "" })}><i className="bi bi-x"></i></button>
-                </span>
-              )}
-              {filters.academic_year && (
-                <span className="filter-chip">
-                  Year: {filters.academic_year}
-                  <button onClick={() => updateFilter({ academic_year: "" })}><i className="bi bi-x"></i></button>
-                </span>
-              )}
-              {filters.grade_level && (
-                <span className="filter-chip">
-                  Grade: {gradeLevelOptions.find(([id]) => String(id) === String(filters.grade_level))?.[1]}
-                  <button onClick={() => updateFilter({ grade_level: "" })}><i className="bi bi-x"></i></button>
-                </span>
-              )}
-              {filters.classroom_id && (
-                <span className="filter-chip">
-                  Class: {(() => {
-                    const c = allClassrooms.find((x) => String(x.id) === String(filters.classroom_id));
-                    return c ? `${c.grade_level_name} ${c.stream_name}` : "";
-                  })()}
-                  <button onClick={() => updateFilter({ classroom_id: "" })}><i className="bi bi-x"></i></button>
-                </span>
-              )}
-            </div>
+            <button className="btn btn-secondary" onClick={clearFilters}>
+              <i className="bi bi-x-lg"></i> Clear
+            </button>
           )}
+        </div>
 
-          <div className="d-flex justify-content-between align-items-center flex-wrap gap-2">
-            <span className="chart-card__title">
-              <i className="bi bi-person-lines-fill me-2 text-brand"></i>
-              Student List
-            </span>
-            <span className="chart-card__subtitle">
-              {totalItems} student{totalItems !== 1 ? "s" : ""}
-            </span>
+        {/* All filters share one row; it wraps on small screens */}
+        <div className="search-bar" style={{ paddingTop: 0 }}>
+          <select
+            className="form-select"
+            value={filters.gender}
+            onChange={(e) => updateFilter({ gender: e.target.value })}
+            aria-label="Gender"
+          >
+            <option value="">Gender</option>
+            <option value="M">Male</option>
+            <option value="F">Female</option>
+          </select>
+          <select
+            className="form-select"
+            value={filters.curriculum_type}
+            onChange={(e) => updateFilter({ curriculum_type: e.target.value })}
+            aria-label="Curriculum"
+          >
+            <option value="">Curriculum</option>
+            <option value="CBC">CBC</option>
+            <option value="8-4-4">8-4-4</option>
+          </select>
+          <select
+            className="form-select"
+            value={filters.status}
+            onChange={(e) => updateFilter({ status: e.target.value })}
+            aria-label="Status"
+          >
+            <option value="">Status</option>
+            <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
+          </select>
+          <select
+            className="form-select"
+            value={filters.academic_year}
+            onChange={(e) => updateFilter({ academic_year: e.target.value })}
+            aria-label="Academic year"
+          >
+            <option value="">Year</option>
+            {academicYearOptions.map((year) => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
+          <select
+            className="form-select"
+            value={filters.grade_level}
+            onChange={(e) => updateFilter({ grade_level: e.target.value })}
+            aria-label="Grade"
+          >
+            <option value="">Grade</option>
+            {gradeLevelOptions.map(([id, name]) => (
+              <option key={id} value={id}>{name}</option>
+            ))}
+          </select>
+          <select
+            className="form-select"
+            value={filters.classroom_id}
+            onChange={(e) => updateFilter({ classroom_id: e.target.value })}
+            aria-label="Class"
+          >
+            <option value="">Class</option>
+            {classroomOptions.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.grade_level_name} {c.stream_name}
+                {!filters.academic_year ? ` (${c.academic_year_year})` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {hasActiveFilters && (
+          <div className="chip-row">
+            {searchQuery && (
+              <span className="filter-chip">
+                Search: "{searchQuery}"
+                <button onClick={() => setSearchInput("")}><i className="bi bi-x"></i></button>
+              </span>
+            )}
+            {filters.gender && (
+              <span className="filter-chip">
+                Gender: {filters.gender === "M" ? "Male" : "Female"}
+                <button onClick={() => updateFilter({ gender: "" })}><i className="bi bi-x"></i></button>
+              </span>
+            )}
+            {filters.curriculum_type && (
+              <span className="filter-chip">
+                Curriculum: {filters.curriculum_type}
+                <button onClick={() => updateFilter({ curriculum_type: "" })}><i className="bi bi-x"></i></button>
+              </span>
+            )}
+            {filters.status && (
+              <span className="filter-chip">
+                Status: {filters.status}
+                <button onClick={() => updateFilter({ status: "" })}><i className="bi bi-x"></i></button>
+              </span>
+            )}
+            {filters.academic_year && (
+              <span className="filter-chip">
+                Year: {filters.academic_year}
+                <button onClick={() => updateFilter({ academic_year: "" })}><i className="bi bi-x"></i></button>
+              </span>
+            )}
+            {filters.grade_level && (
+              <span className="filter-chip">
+                Grade: {gradeLevelOptions.find(([id]) => String(id) === String(filters.grade_level))?.[1]}
+                <button onClick={() => updateFilter({ grade_level: "" })}><i className="bi bi-x"></i></button>
+              </span>
+            )}
+            {filters.classroom_id && (
+              <span className="filter-chip">
+                Class: {(() => {
+                  const c = allClassrooms.find((x) => String(x.id) === String(filters.classroom_id));
+                  return c ? `${c.grade_level_name} ${c.stream_name}` : "";
+                })()}
+                <button onClick={() => updateFilter({ classroom_id: "" })}><i className="bi bi-x"></i></button>
+              </span>
+            )}
           </div>
+        )}
+
+        <div className="table-wrap__header" style={{ borderTop: "1px solid var(--border-color)" }}>
+          <span className="panel-title">
+            <i className="bi bi-person-lines-fill text-brand"></i>
+            Student List
+          </span>
+          <span className="chart-card__subtitle">
+            {totalItems} student{totalItems !== 1 ? "s" : ""}
+          </span>
         </div>
 
         {loading ? (
@@ -621,340 +776,389 @@ export default function AdminStudents() {
             </p>
           </div>
         ) : (
-          <div className="table-responsive">
-            <table className="table table-hover mb-0">
-              <thead>
-                <tr>
-                  <th>Admission No</th>
-                  <th>Name</th>
-                  <th>Gender</th>
-                  <th>Curriculum</th>
-                  <th>Current Class</th>
-                  <th>Status</th>
-                  <th style={{ width: "120px" }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {students.map((s) => (
-                  <tr key={s.id}>
-                    <td className="cell-mono text-brand fw-semibold">{s.admission_no}</td>
-                    <td>
-                      <div className="table-avatar-cell">
-                        <div className="avatar-sm">
-                          {(s.full_name || "").split(" ").filter(Boolean).slice(0, 2).map((n) => n[0]).join("")}
-                        </div>
-                        <span className="cell-name">{s.full_name}</span>
-                      </div>
-                    </td>
-                    <td>
-                      <span className={`badge ${s.gender === "M" ? "badge-blue" : "badge-gold"}`}>
-                        {s.gender === "M" ? "Male" : "Female"}
-                      </span>
-                    </td>
-                    <td>
-                      <span className="badge badge-neutral">{s.curriculum_type}</span>
-                    </td>
-                    <td>{s.current_classroom || "-"}</td>
-                    <td>
-                      <span className={`badge ${s.is_active ? "badge-success" : "badge-danger"}`}>
-                        <span className={`status-dot ${s.is_active ? "status-dot--online" : "status-dot--offline"}`}></span>
-                        {s.is_active ? "Active" : "Inactive"}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="table-actions">
-                        <button className="btn btn-sm btn-outline-primary btn-icon" title="View full profile" aria-label="View" onClick={() => setProfileId(s.id)}>
-                          <i className="bi bi-eye"></i>
-                        </button>
-                        {canEditStudents && (
-                          <button className="btn btn-sm btn-secondary btn-icon" title="Edit" aria-label="Edit" onClick={() => openEdit(s)}>
-                            <i className="bi bi-pencil"></i>
-                          </button>
-                        )}
-                        <button className="btn btn-sm btn-secondary btn-icon" title="Reset Password" aria-label="Reset Password" onClick={() => openReset(s)}>
-                          <i className="bi bi-key"></i>
-                        </button>
-                      </div>
-                    </td>
+          <div className="table-wrap">
+            <div className="table-responsive">
+              <table className="table table-hover mb-0">
+                <thead>
+                  <tr>
+                    <th>Admission No</th>
+                    <th>Student</th>
+                    <th>Gender</th>
+                    <th>Curriculum</th>
+                    <th>Current Class</th>
+                    <th>Status</th>
+                    <th className="text-center" style={{ width: "9rem" }}>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {students.map((s) => (
+                    <tr key={s.id}>
+                      <td className="cell-mono text-brand fw-semibold">{s.admission_no}</td>
+                      <td>
+                        <div className="table-avatar-cell">
+                          <StudentAvatar studentId={s.id} name={s.full_name} tick={photoTick} />
+                          <span className="cell-name">{s.full_name}</span>
+                        </div>
+                      </td>
+                      <td>{s.gender === "M" ? "Male" : "Female"}</td>
+                      <td>
+                        <span className="badge badge-neutral">{s.curriculum_type}</span>
+                      </td>
+                      <td>
+                        {s.current_classroom ? <span className="chip">{s.current_classroom}</span> : "-"}
+                      </td>
+                      <td>
+                        <span className={`status-pill ${s.is_active ? "status-pill--success" : "status-pill--danger"}`}>
+                          {s.is_active ? "Active" : "Inactive"}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="row-actions">
+                          <button className="btn btn-icon" title="View full profile" aria-label="View" onClick={() => setProfileId(s.id)}>
+                            <i className="bi bi-eye"></i>
+                          </button>
+                          {canEditStudents && (
+                            <button className="btn btn-icon" title="Edit" aria-label="Edit" onClick={() => openEdit(s)}>
+                              <i className="bi bi-pencil"></i>
+                            </button>
+                          )}
+                          <button className="btn btn-icon" title="Reset Password" aria-label="Reset Password" onClick={() => openReset(s)}>
+                            <i className="bi bi-key"></i>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
-      </div>
 
-      {!loading && students.length > 0 && (
-        <Pagination
-          currentPage={currentPage}
-          totalPages={totalPages}
-          onPageChange={handlePageChange}
-          itemsPerPage={itemsPerPage}
-          setItemsPerPage={(n) => { setItemsPerPage(n); setCurrentPage(1); }}
-          startIndex={startIndex}
-          endIndex={endIndex}
-          totalItems={totalItems}
-        />
-      )}
+        {!loading && students.length > 0 && (
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            onPageChange={handlePageChange}
+            itemsPerPage={itemsPerPage}
+            setItemsPerPage={(n) => { setItemsPerPage(n); setCurrentPage(1); }}
+            startIndex={startIndex}
+            endIndex={endIndex}
+            totalItems={totalItems}
+          />
+        )}
+      </section>
 
       {/* ---------------- ADD MODAL ---------------- */}
-      <Modal show={showAddModal} onClose={closeAddModal} title="Admit New Student" size="lg">
-        <form onSubmit={handleAdmit}>
-          <h6 className="settings-section__title mb-2">Student Details</h6>
-          <div className="row g-3">
-            <div className="col-md-6">
-              <label className="form-label">First Name</label>
-              <input className="form-control" required
-                value={addForm.first_name}
-                onChange={(e) => setAddForm({ ...addForm, first_name: e.target.value })} />
-            </div>
-            <div className="col-md-6">
-              <label className="form-label">Last Name</label>
-              <input className="form-control" required
-                value={addForm.last_name}
-                onChange={(e) => setAddForm({ ...addForm, last_name: e.target.value })} />
-            </div>
-            <div className="col-md-6">
-              <label className="form-label">Email (optional)</label>
-              <input type="email" className="form-control"
-                value={addForm.email}
-                onChange={(e) => setAddForm({ ...addForm, email: e.target.value })} />
-            </div>
-            <div className="col-md-6">
-              <label className="form-label">Phone Number (optional)</label>
-              <input className="form-control"
-                value={addForm.phone_number}
-                onChange={(e) => setAddForm({ ...addForm, phone_number: e.target.value })} />
-            </div>
-            <div className="col-md-6">
-              <label className="form-label">National ID / Birth No (optional)</label>
-              <input className="form-control"
-                value={addForm.national_id}
-                onChange={(e) => setAddForm({ ...addForm, national_id: e.target.value })} />
-            </div>
-            <div className="col-md-6">
-              <label className="form-label">UPI / NEMIS No (optional)</label>
-              <input className="form-control" value={addForm.upi_number}
-                onChange={(e) => setAddForm({ ...addForm, upi_number: e.target.value })} />
-            </div>
-            <div className="col-md-4">
-              <label className="form-label">Gender</label>
-              <select className="form-select" value={addForm.gender}
-                onChange={(e) => setAddForm({ ...addForm, gender: e.target.value })}>
-                <option value="M">Male</option>
-                <option value="F">Female</option>
-              </select>
-            </div>
-            <div className="col-md-4">
-              <label className="form-label">Date of Birth</label>
-              <input type="date" className="form-control" value={addForm.date_of_birth}
-                onChange={(e) => setAddForm({ ...addForm, date_of_birth: e.target.value })} />
-            </div>
-            <div className="col-md-4">
-              <label className="form-label">Curriculum</label>
-              <select className="form-select" value={addForm.curriculum_type}
-                onChange={(e) => setAddForm({ ...addForm, curriculum_type: e.target.value })}>
-                <option value="CBC">CBC</option>
-                <option value="8-4-4">8-4-4 (Legacy)</option>
-              </select>
-            </div>
-
-            {/* Migrating an already-admitted student */}
-            <div className="col-md-6">
-              <label className="form-label">Admission Number (optional)</label>
-              <input
-                className="form-control"
-                placeholder="Leave blank to auto-generate"
-                value={addForm.admission_no}
-                onChange={(e) => setAddForm({ ...addForm, admission_no: e.target.value })}
-              />
-            </div>
-            <div className="col-md-6">
-              <label className="form-label">Date Admitted (optional)</label>
-              <input
-                type="date"
-                className="form-control"
-                value={addForm.date_admitted}
-                onChange={(e) => setAddForm({ ...addForm, date_admitted: e.target.value })}
-              />
-            </div>
-            <div className="col-12">
-              <div className="form-text-hint mt-0">
-                Leave both blank for a brand-new admission — the admission number auto-generates and
-                today's date is used, exactly as before. Only fill these in when migrating a student
-                who was already admitted under your previous system and already has these on record.
-              </div>
-            </div>
-
-            <div className="col-md-12">
-              <label className="form-label">Classroom</label>
-              <select className="form-select" required value={addForm.classroom_id}
-                onChange={(e) => setAddForm({ ...addForm, classroom_id: e.target.value })}>
-                <option value="">Select...</option>
-                {admitClassrooms.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.grade_level_name} {c.stream_name} - {c.academic_year_year}
-                  </option>
-                ))}
-              </select>
-              <div className="form-text-hint">
-                Only classrooms in the current academic year are shown — CBC and 8-4-4 alike.
-              </div>
-            </div>
-
-            {/* ---------- Optional: term fee for a student joining part-way through the term ---------- */}
-            {addForm.classroom_id && (
-              <div className="col-12">
-                <div className="border rounded p-3">
-                  <div className="fw-semibold mb-2">
-                    <i className="bi bi-calendar2-range me-2 text-brand"></i>
-                    First-term fee (optional)
-                  </div>
-
-                  {feeLoading && !feePreview ? (
-                    <div className="form-text-hint mt-0">
-                      <span className="spinner-border spinner-border-sm me-2"></span>
-                      Checking the term dates...
-                    </div>
-                  ) : !feePreview ? (
-                    <div className="form-text-hint mt-0">
-                      Could not work out the term fee. The student will be charged the normal term fee.
-                    </div>
-                  ) : !feePreview.applicable ? (
-                    <div className="form-text-hint mt-0">
-                      <i className="bi bi-info-circle me-1"></i>
-                      {feePreview.message}
-                    </div>
-                  ) : (
-                    <>
-                      <div className="small mb-2">
-                        <strong>{feePreview.term_label}</strong> runs {feePreview.term_start} to{" "}
-                        {feePreview.term_end} ({feePreview.total_days} days).{" "}
-                        {feePreview.days_remaining === feePreview.total_days ? (
-                          <>The student joins at the start of the term, so the full fee of{" "}
-                            <strong>{kes(feePreview.full_fee)}</strong> applies.</>
-                        ) : (
-                          <>From the admission date, <strong>{feePreview.days_remaining} of{" "}
-                            {feePreview.total_days} days</strong> remain. Full fee{" "}
-                            <strong>{kes(feePreview.full_fee)}</strong>; pro-rated suggestion{" "}
-                            <strong>{kes(feePreview.prorated_fee)}</strong>.</>
-                        )}
-                      </div>
-
-                      <div className="form-check mb-2">
-                        <input
-                          className="form-check-input"
-                          type="checkbox"
-                          id="reduceFee"
-                          checked={reduceFee}
-                          onChange={(e) => {
-                            setReduceFee(e.target.checked);
-                            setFeeError("");
-                            if (e.target.checked && !termFeeTouched) setTermFee(String(feePreview.prorated_fee));
-                          }}
-                        />
-                        <label className="form-check-label" htmlFor="reduceFee">
-                          Charge a different amount for this term (instead of the full {kes(feePreview.full_fee)})
-                        </label>
-                      </div>
-
-                      {reduceFee && (
-                        <div className="row g-2 align-items-end">
-                          <div className="col-md-4">
-                            <label className="form-label small">Term fee for this student (KES)</label>
-                            <input
-                              type="number"
-                              min="0"
-                              step="1"
-                              className="form-control"
-                              value={termFee}
-                              onChange={(e) => { setTermFee(e.target.value); setTermFeeTouched(true); setFeeError(""); }}
-                            />
-                          </div>
-                          <div className="col-md-3">
-                            <button
-                              type="button"
-                              className="btn btn-outline-secondary w-100"
-                              onClick={() => { setTermFee(String(feePreview.prorated_fee)); setTermFeeTouched(false); setFeeError(""); }}
-                            >
-                              Use suggested
-                            </button>
-                          </div>
-                          <div className="col-md-5">
-                            <label className="form-label small">Reason (optional)</label>
-                            <input
-                              className="form-control"
-                              placeholder="e.g. Joined 3 weeks before term end"
-                              maxLength={200}
-                              value={feeReason}
-                              onChange={(e) => setFeeReason(e.target.value)}
-                            />
-                          </div>
-                        </div>
-                      )}
-                      {feeError && <div className="text-danger small mt-2">{feeError}</div>}
-                      <div className="form-text-hint mb-0 mt-2">
-                        Days are counted as calendar days from the admission date to the end of the term. The
-                        suggestion is only a guide — you decide the amount. Leave this unticked to charge the normal
-                        full term fee. Later terms are charged in full as usual.
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <h6 className="settings-section__title mt-4 mb-2">Parent / Guardian</h6>
-          <div className="row g-3">
-            <div className="col-md-5">
-              <label className="form-label">Parent/Guardian Name</label>
-              <input className="form-control"
-                placeholder="e.g. Jane Wanjiku"
-                value={addForm.parent_name}
-                onChange={(e) => setAddForm({ ...addForm, parent_name: e.target.value })} />
-            </div>
-            <div className="col-md-3">
-              <label className="form-label">Parent/Guardian Phone</label>
-              <input className="form-control"
-                placeholder="07XXXXXXXX"
-                value={addForm.parent_phone}
-                onChange={(e) => setAddForm({ ...addForm, parent_phone: e.target.value })} />
-            </div>
-            <div className="col-md-2">
-              <label className="form-label">Relationship</label>
-              <select className="form-select" value={addForm.parent_relationship}
-                onChange={(e) => setAddForm({ ...addForm, parent_relationship: e.target.value })}>
-                <option value="MOTHER">Mother</option>
-                <option value="FATHER">Father</option>
-                <option value="GUARDIAN">Guardian</option>
-              </select>
-            </div>
-            <div className="col-md-2">
-              <label className="form-label">Parent/Guardian Email</label>
-              <input type="email" className="form-control"
-                placeholder="optional"
-                value={addForm.parent_email}
-                onChange={(e) => setAddForm({ ...addForm, parent_email: e.target.value })} />
-            </div>
-            <div className="col-12">
-              <div className="form-text-hint mt-0">
-                If this phone number already belongs to a registered parent (e.g. an older sibling),
-                the student is linked to that existing parent account instead of creating a duplicate.
-                An email entered here fills in a blank one on that existing account, but never overwrites one already on file.
-              </div>
-            </div>
-          </div>
-
-          <p className="form-text-hint mt-3">
-            When left blank, the admission number is generated automatically and used as the student's
-            login username. The initial password for every new student is their admission number.
-          </p>
-          <div className="mt-3 pt-3 border-top d-flex gap-2 justify-content-end">
+      <Modal
+        show={showAddModal}
+        onClose={closeAddModal}
+        title="Admit New Student"
+        subtitle="Fill in the student details below"
+        icon="bi-mortarboard"
+        size="xl"
+        footer={
+          <>
             <button type="button" className="btn btn-secondary" onClick={closeAddModal}>Cancel</button>
-            <button className="btn btn-primary" type="submit" disabled={addSaving}>
+            <button className="btn btn-primary" type="submit" form="admitStudentForm" disabled={addSaving}>
+              <i className="bi bi-save"></i>
               {addSaving ? "Saving..." : "Save Student"}
             </button>
+          </>
+        }
+      >
+        <form id="admitStudentForm" onSubmit={handleAdmit}>
+          <div className="modal-layout">
+            {/* Photo box: previewed here, saved to the ID card profile after admission */}
+            <aside className="modal-aside">
+              <div
+                className="upload-drop"
+                style={{ padding: 0, overflow: "hidden" }}
+                role="button"
+                tabIndex={0}
+                aria-label="Choose student photo"
+                onClick={() => addPhotoRef.current?.click()}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addPhotoRef.current?.click(); } }}
+              >
+                {addPhoto ? (
+                  <img src={addPhoto.url} alt="Selected student" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                ) : addInitials ? (
+                  <span style={{ fontSize: "2rem", fontWeight: 700 }}>{addInitials}</span>
+                ) : (
+                  <i className="bi bi-image" aria-hidden="true"></i>
+                )}
+              </div>
+              <strong>Student Photo</strong>
+              <p className="form-text-hint">PNG or JPG, up to 3MB</p>
+              <input ref={addPhotoRef} type="file" accept="image/png,image/jpeg" hidden onChange={pickAddPhoto} />
+              <div className="d-flex gap-2 justify-content-center">
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => addPhotoRef.current?.click()}>
+                  <i className="bi bi-upload"></i>{addPhoto ? "Change" : "Choose File"}
+                </button>
+                {addPhoto && (
+                  <button type="button" className="btn btn-light btn-sm" onClick={clearAddPhoto}>Remove</button>
+                )}
+              </div>
+              <p className="form-text-hint mt-3 mb-0">
+                The photo is saved to the student's ID card profile when you click Save Student.
+              </p>
+            </aside>
+
+            <div>
+              <h6 className="modal-section-title"><i className="bi bi-person" aria-hidden="true"></i>Student Details</h6>
+              <div className="row g-3">
+                <div className="col-md-6">
+                  <label className="form-label">First Name <span className="req">*</span></label>
+                  <input className="form-control" required placeholder="Enter first name"
+                    value={addForm.first_name}
+                    onChange={(e) => setAddForm({ ...addForm, first_name: e.target.value })} />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Last Name <span className="req">*</span></label>
+                  <input className="form-control" required placeholder="Enter last name"
+                    value={addForm.last_name}
+                    onChange={(e) => setAddForm({ ...addForm, last_name: e.target.value })} />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Email (optional)</label>
+                  <input type="email" className="form-control" placeholder="student@example.com"
+                    value={addForm.email}
+                    onChange={(e) => setAddForm({ ...addForm, email: e.target.value })} />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Phone Number (optional)</label>
+                  <input className="form-control" placeholder="e.g. 0712 345 678"
+                    value={addForm.phone_number}
+                    onChange={(e) => setAddForm({ ...addForm, phone_number: e.target.value })} />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">National ID / Birth No (optional)</label>
+                  <input className="form-control"
+                    value={addForm.national_id}
+                    onChange={(e) => setAddForm({ ...addForm, national_id: e.target.value })} />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">UPI / NEMIS No (optional)</label>
+                  <input className="form-control" value={addForm.upi_number}
+                    onChange={(e) => setAddForm({ ...addForm, upi_number: e.target.value })} />
+                </div>
+                <div className="col-md-4">
+                  <label className="form-label">Gender</label>
+                  <select className="form-select" value={addForm.gender}
+                    onChange={(e) => setAddForm({ ...addForm, gender: e.target.value })}>
+                    <option value="M">Male</option>
+                    <option value="F">Female</option>
+                  </select>
+                </div>
+                <div className="col-md-4">
+                  <label className="form-label">Date of Birth</label>
+                  <input type="date" className="form-control" value={addForm.date_of_birth}
+                    onChange={(e) => setAddForm({ ...addForm, date_of_birth: e.target.value })} />
+                </div>
+                <div className="col-md-4">
+                  <label className="form-label">Curriculum</label>
+                  <select className="form-select" value={addForm.curriculum_type}
+                    onChange={(e) => setAddForm({ ...addForm, curriculum_type: e.target.value })}>
+                    <option value="CBC">CBC</option>
+                    <option value="8-4-4">8-4-4 (Legacy)</option>
+                  </select>
+                </div>
+              </div>
+
+              <h6 className="modal-section-title"><i className="bi bi-building" aria-hidden="true"></i>Admission</h6>
+              <div className="row g-3">
+                {/* Migrating an already-admitted student */}
+                <div className="col-md-6">
+                  <label className="form-label">Admission Number (optional)</label>
+                  <input
+                    className="form-control"
+                    placeholder="Leave blank to auto-generate"
+                    value={addForm.admission_no}
+                    onChange={(e) => setAddForm({ ...addForm, admission_no: e.target.value })}
+                  />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Date Admitted (optional)</label>
+                  <input
+                    type="date"
+                    className="form-control"
+                    value={addForm.date_admitted}
+                    onChange={(e) => setAddForm({ ...addForm, date_admitted: e.target.value })}
+                  />
+                </div>
+                <div className="col-12">
+                  <div className="form-text-hint mt-0">
+                    Leave both blank for a brand-new admission — the admission number auto-generates and
+                    today's date is used, exactly as before. Only fill these in when migrating a student
+                    who was already admitted under your previous system and already has these on record.
+                  </div>
+                </div>
+
+                <div className="col-md-12">
+                  <label className="form-label">Classroom <span className="req">*</span></label>
+                  <select className="form-select" required value={addForm.classroom_id}
+                    onChange={(e) => setAddForm({ ...addForm, classroom_id: e.target.value })}>
+                    <option value="">Select class</option>
+                    {admitClassrooms.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.grade_level_name} {c.stream_name} - {c.academic_year_year}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="form-text-hint">
+                    Only classrooms in the current academic year are shown — CBC and 8-4-4 alike.
+                  </div>
+                </div>
+
+                {/* ---------- Optional: term fee for a student joining part-way through the term ---------- */}
+                {addForm.classroom_id && (
+                  <div className="col-12">
+                    <div className="panel panel--tint">
+                      <div className="fw-semibold mb-2">
+                        <i className="bi bi-calendar2-range me-2 text-brand"></i>
+                        First-term fee (optional)
+                      </div>
+
+                      {feeLoading && !feePreview ? (
+                        <div className="form-text-hint mt-0">
+                          <span className="spinner-border spinner-border-sm me-2"></span>
+                          Checking the term dates...
+                        </div>
+                      ) : !feePreview ? (
+                        <div className="form-text-hint mt-0">
+                          Could not work out the term fee. The student will be charged the normal term fee.
+                        </div>
+                      ) : !feePreview.applicable ? (
+                        <div className="form-text-hint mt-0">
+                          <i className="bi bi-info-circle me-1"></i>
+                          {feePreview.message}
+                        </div>
+                      ) : (
+                        <>
+                          <div className="small mb-2">
+                            <strong>{feePreview.term_label}</strong> runs {feePreview.term_start} to{" "}
+                            {feePreview.term_end} ({feePreview.total_days} days).{" "}
+                            {feePreview.days_remaining === feePreview.total_days ? (
+                              <>The student joins at the start of the term, so the full fee of{" "}
+                                <strong>{kes(feePreview.full_fee)}</strong> applies.</>
+                            ) : (
+                              <>From the admission date, <strong>{feePreview.days_remaining} of{" "}
+                                {feePreview.total_days} days</strong> remain. Full fee{" "}
+                                <strong>{kes(feePreview.full_fee)}</strong>; pro-rated suggestion{" "}
+                                <strong>{kes(feePreview.prorated_fee)}</strong>.</>
+                            )}
+                          </div>
+
+                          <div className="form-check mb-2">
+                            <input
+                              className="form-check-input"
+                              type="checkbox"
+                              id="reduceFee"
+                              checked={reduceFee}
+                              onChange={(e) => {
+                                setReduceFee(e.target.checked);
+                                setFeeError("");
+                                if (e.target.checked && !termFeeTouched) setTermFee(String(feePreview.prorated_fee));
+                              }}
+                            />
+                            <label className="form-check-label" htmlFor="reduceFee">
+                              Charge a different amount for this term (instead of the full {kes(feePreview.full_fee)})
+                            </label>
+                          </div>
+
+                          {reduceFee && (
+                            <div className="row g-2 align-items-end">
+                              <div className="col-md-4">
+                                <label className="form-label small">Term fee for this student (KES)</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="1"
+                                  className="form-control"
+                                  value={termFee}
+                                  onChange={(e) => { setTermFee(e.target.value); setTermFeeTouched(true); setFeeError(""); }}
+                                />
+                              </div>
+                              <div className="col-md-3">
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary w-100"
+                                  onClick={() => { setTermFee(String(feePreview.prorated_fee)); setTermFeeTouched(false); setFeeError(""); }}
+                                >
+                                  Use suggested
+                                </button>
+                              </div>
+                              <div className="col-md-5">
+                                <label className="form-label small">Reason (optional)</label>
+                                <input
+                                  className="form-control"
+                                  placeholder="e.g. Joined 3 weeks before term end"
+                                  maxLength={200}
+                                  value={feeReason}
+                                  onChange={(e) => setFeeReason(e.target.value)}
+                                />
+                              </div>
+                            </div>
+                          )}
+                          {feeError && <div className="text-danger small mt-2">{feeError}</div>}
+                          <div className="form-text-hint mb-0 mt-2">
+                            Days are counted as calendar days from the admission date to the end of the term. The
+                            suggestion is only a guide — you decide the amount. Leave this unticked to charge the normal
+                            full term fee. Later terms are charged in full as usual.
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <h6 className="modal-section-title"><i className="bi bi-shield-check" aria-hidden="true"></i>Parent / Guardian Information</h6>
+              <div className="row g-3">
+                <div className="col-md-6">
+                  <label className="form-label">Parent/Guardian Name</label>
+                  <input className="form-control"
+                    placeholder="e.g. Jane Wanjiku"
+                    value={addForm.parent_name}
+                    onChange={(e) => setAddForm({ ...addForm, parent_name: e.target.value })} />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Parent/Guardian Phone</label>
+                  <input className="form-control"
+                    placeholder="07XXXXXXXX"
+                    value={addForm.parent_phone}
+                    onChange={(e) => setAddForm({ ...addForm, parent_phone: e.target.value })} />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Relationship</label>
+                  <select className="form-select" value={addForm.parent_relationship}
+                    onChange={(e) => setAddForm({ ...addForm, parent_relationship: e.target.value })}>
+                    <option value="MOTHER">Mother</option>
+                    <option value="FATHER">Father</option>
+                    <option value="GUARDIAN">Guardian</option>
+                  </select>
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Parent/Guardian Email</label>
+                  <input type="email" className="form-control"
+                    placeholder="optional"
+                    value={addForm.parent_email}
+                    onChange={(e) => setAddForm({ ...addForm, parent_email: e.target.value })} />
+                </div>
+                <div className="col-12">
+                  <div className="form-text-hint mt-0">
+                    If this phone number already belongs to a registered parent (e.g. an older sibling),
+                    the student is linked to that existing parent account instead of creating a duplicate.
+                    An email entered here fills in a blank one on that existing account, but never overwrites one already on file.
+                  </div>
+                </div>
+              </div>
+
+              <p className="form-text-hint mt-3 mb-0">
+                When left blank, the admission number is generated automatically and used as the student's
+                login username. The initial password for every new student is their admission number.
+              </p>
+            </div>
           </div>
         </form>
       </Modal>
@@ -963,31 +1167,53 @@ export default function AdminStudents() {
       <StudentProfileModal
         show={profileId !== null}
         studentId={profileId}
-        onClose={() => setProfileId(null)}
+        onClose={() => {
+          if (profileId !== null) {
+            photoCache.delete(profileId);
+            setPhotoTick((t) => t + 1);
+          }
+          setProfileId(null);
+        }}
         onChanged={loadStudents}
         isAdmin={currentUserRole === "ADMIN"}
       />
 
       {/* ---------------- EDIT MODAL ---------------- */}
-      <Modal show={showEditModal} onClose={() => setShowEditModal(false)} title="Edit Student & Account" size="lg">
+      <Modal
+        show={showEditModal}
+        onClose={() => setShowEditModal(false)}
+        title="Edit Student & Account"
+        subtitle="Update the student's account, profile, class and guardian"
+        icon="bi-pencil-square"
+        size="lg"
+        footer={editTarget ? (
+          <>
+            <button type="button" className="btn btn-secondary" onClick={() => setShowEditModal(false)}>Cancel</button>
+            <button className="btn btn-primary" type="submit" form="editStudentForm" disabled={editSaving}>
+              <i className="bi bi-save"></i>
+              {editSaving ? "Saving..." : "Save Changes"}
+            </button>
+          </>
+        ) : null}
+      >
         {!editTarget ? (
           <div className="text-center py-4"><span className="spinner-border spinner-border-sm me-2"></span>Loading...</div>
         ) : (
-          <form onSubmit={handleEditSubmit}>
-            <div className="d-flex flex-wrap gap-3 mb-2 form-text-hint">
-              <span><strong>Admission No:</strong> {editTarget.admission_no}</span>
-              <span><strong>Username:</strong> {editTarget.username}</span>
+          <form id="editStudentForm" onSubmit={handleEditSubmit}>
+            <div className="d-flex flex-wrap gap-2 mb-3">
+              <span className="chip"><i className="bi bi-hash"></i>{editTarget.admission_no}</span>
+              <span className="chip"><i className="bi bi-person-badge"></i>{editTarget.username}</span>
             </div>
 
-            <h6 className="settings-section__title mt-2 mb-2">Account</h6>
+            <h6 className="modal-section-title"><i className="bi bi-person" aria-hidden="true"></i>Account</h6>
             <div className="row g-3">
               <div className="col-md-6">
-                <label className="form-label">First Name</label>
+                <label className="form-label">First Name <span className="req">*</span></label>
                 <input className="form-control" required value={editForm.first_name}
                   onChange={(e) => setEditForm({ ...editForm, first_name: e.target.value })} />
               </div>
               <div className="col-md-6">
-                <label className="form-label">Last Name</label>
+                <label className="form-label">Last Name <span className="req">*</span></label>
                 <input className="form-control" required value={editForm.last_name}
                   onChange={(e) => setEditForm({ ...editForm, last_name: e.target.value })} />
               </div>
@@ -1011,7 +1237,7 @@ export default function AdminStudents() {
               </div>
             </div>
 
-            <h6 className="settings-section__title mt-4 mb-2">Student Profile</h6>
+            <h6 className="modal-section-title"><i className="bi bi-mortarboard" aria-hidden="true"></i>Student Profile</h6>
             <div className="row g-3">
               <div className="col-md-4">
                 <label className="form-label">Gender</label>
@@ -1049,7 +1275,7 @@ export default function AdminStudents() {
               </div>
             </div>
 
-            <h6 className="settings-section__title mt-4 mb-2">Classroom</h6>
+            <h6 className="modal-section-title"><i className="bi bi-building" aria-hidden="true"></i>Classroom</h6>
             <div className="row g-3">
               <div className="col-12">
                 <label className="form-label">Current Classroom</label>
@@ -1068,24 +1294,24 @@ export default function AdminStudents() {
               </div>
             </div>
 
-            <h6 className="settings-section__title mt-4 mb-2">Parent / Guardian</h6>
+            <h6 className="modal-section-title"><i className="bi bi-shield-check" aria-hidden="true"></i>Parent / Guardian Information</h6>
             <div className="row g-3">
-              <div className="col-md-4">
+              <div className="col-md-6">
                 <label className="form-label">Guardian Name</label>
                 <input className="form-control" value={editForm.guardian_name}
                   onChange={(e) => setEditForm({ ...editForm, guardian_name: e.target.value })} />
               </div>
-              <div className="col-md-3">
+              <div className="col-md-6">
                 <label className="form-label">Guardian Phone</label>
                 <input className="form-control" placeholder="07XXXXXXXX" value={editForm.guardian_phone}
                   onChange={(e) => setEditForm({ ...editForm, guardian_phone: e.target.value })} />
               </div>
-              <div className="col-md-3">
+              <div className="col-md-6">
                 <label className="form-label">Guardian Email</label>
                 <input type="email" className="form-control" placeholder="optional" value={editForm.guardian_email}
                   onChange={(e) => setEditForm({ ...editForm, guardian_email: e.target.value })} />
               </div>
-              <div className="col-md-2">
+              <div className="col-md-6">
                 <label className="form-label">Relationship</label>
                 <select className="form-select" value={editForm.guardian_relationship}
                   onChange={(e) => setEditForm({ ...editForm, guardian_relationship: e.target.value })}>
@@ -1103,19 +1329,30 @@ export default function AdminStudents() {
                 </div>
               </div>
             </div>
-
-            <div className="mt-4 pt-3 border-top d-flex gap-2 justify-content-end">
-              <button type="button" className="btn btn-secondary" onClick={() => setShowEditModal(false)}>Cancel</button>
-              <button className="btn btn-primary" type="submit" disabled={editSaving}>
-                {editSaving ? "Saving..." : "Save Changes"}
-              </button>
-            </div>
           </form>
         )}
       </Modal>
 
       {/* ---------------- RESET PASSWORD MODAL ---------------- */}
-      <Modal show={showResetModal} onClose={() => setShowResetModal(false)} title="Reset Password">
+      <Modal
+        show={showResetModal}
+        onClose={() => setShowResetModal(false)}
+        title="Reset Password"
+        subtitle="Set a new login password for this student"
+        icon="bi-key"
+        footer={resetTarget ? (
+          resetResult ? (
+            <button className="btn btn-secondary" onClick={() => setShowResetModal(false)}>Close</button>
+          ) : (
+            <>
+              <button type="button" className="btn btn-secondary" onClick={() => setShowResetModal(false)}>Cancel</button>
+              <button className="btn btn-warning" type="submit" form="resetPasswordForm" disabled={resetSaving}>
+                {resetSaving ? "Resetting..." : "Reset Password"}
+              </button>
+            </>
+          )
+        ) : null}
+      >
         {resetTarget && (
           resetResult ? (
             <div>
@@ -1123,15 +1360,12 @@ export default function AdminStudents() {
                 Password reset for <strong>{resetTarget.full_name}</strong>.
               </div>
               <p>New password: <code>{resetResult}</code></p>
-              <p className="form-text-hint">
+              <p className="form-text-hint mb-0">
                 Share this with the student securely — it won't be shown again.
               </p>
-              <div className="d-flex justify-content-end">
-                <button className="btn btn-secondary" onClick={() => setShowResetModal(false)}>Close</button>
-              </div>
             </div>
           ) : (
-            <form onSubmit={handleReset}>
+            <form id="resetPasswordForm" onSubmit={handleReset}>
               <p>Resetting password for <strong>{resetTarget.full_name}</strong> ({resetTarget.admission_no}).</p>
               <label className="form-label">New Password (optional)</label>
               <input
@@ -1140,12 +1374,6 @@ export default function AdminStudents() {
                 value={resetPasswordValue}
                 onChange={(e) => setResetPasswordValue(e.target.value)}
               />
-              <div className="mt-3 pt-3 border-top d-flex gap-2 justify-content-end">
-                <button type="button" className="btn btn-secondary" onClick={() => setShowResetModal(false)}>Cancel</button>
-                <button className="btn btn-warning" type="submit" disabled={resetSaving}>
-                  {resetSaving ? "Resetting..." : "Reset Password"}
-                </button>
-              </div>
             </form>
           )
         )}
