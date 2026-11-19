@@ -1,6 +1,8 @@
 from rest_framework import serializers
 from . import models, services
-
+from datetime import timedelta
+from django.db.models import Sum
+from django.utils import timezone
 
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -111,3 +113,47 @@ class AttendanceSerializer(serializers.ModelSerializer):
         model = models.StaffAttendance
         fields = "__all__"
         read_only_fields = ("recorded_by",)
+
+
+
+
+class MyLeaveRequestSerializer(serializers.ModelSerializer):
+    """Employee-facing: the employee always comes from the logged-in user, never the payload."""
+    leave_type_name = serializers.CharField(source="leave_type.name", read_only=True)
+
+    class Meta:
+        model = models.LeaveRequest
+        fields = ("id", "leave_type", "leave_type_name", "start_date", "end_date", "days",
+                  "reason", "status", "review_remarks", "reviewed_at", "created_at")
+        read_only_fields = ("days", "status", "review_remarks", "reviewed_at", "created_at")
+
+    def validate_reason(self, v):
+        if not v.strip():
+            raise serializers.ValidationError("Please give a reason.")
+        return v.strip()
+
+    def validate(self, data):
+        emp = self.context["employee"]
+        start, end, lt = data["start_date"], data["end_date"], data["leave_type"]
+        if end < start:
+            raise serializers.ValidationError("End date is before start date.")
+        if start < timezone.localdate() - timedelta(days=30):
+            raise serializers.ValidationError("You can't request leave starting more than 30 days ago. Contact HR.")
+        days = len(services.weekdays_between(start, end))
+        if days == 0:
+            raise serializers.ValidationError("That range has no working days.")
+        overlap = models.LeaveRequest.objects.filter(
+            employee=emp, status__in=["PENDING", "APPROVED"],
+            start_date__lte=end, end_date__gte=start).exists()
+        if overlap:
+            raise serializers.ValidationError("You already have a pending or approved request overlapping these dates.")
+        if lt.is_paid:
+            pending = (models.LeaveRequest.objects.filter(
+                employee=emp, leave_type=lt, status="PENDING", start_date__year=start.year
+            ).aggregate(t=Sum("days"))["t"] or 0)
+            available = services.leave_balance(emp, lt, start.year) - pending
+            if days > available:
+                raise serializers.ValidationError(
+                    f"Not enough {lt.name} days left ({max(available, 0)} available, {days} requested).")
+        data["days"] = days
+        return data

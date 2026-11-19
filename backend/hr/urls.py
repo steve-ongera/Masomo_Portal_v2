@@ -15,6 +15,7 @@ router.register("statutory-rates", views.RateViewSet, basename="hr-rate")
 router.register("payroll-runs", views.RunViewSet, basename="hr-run")
 router.register("vacancies", views.VacancyViewSet, basename="hr-vacancy")
 router.register("applications", views.ApplicationViewSet, basename="hr-application")
+router.register("my-leave", views.MyLeaveViewSet, basename="hr-my-leave")
 
 urlpatterns = [
     path("dashboard/", views.dashboard),

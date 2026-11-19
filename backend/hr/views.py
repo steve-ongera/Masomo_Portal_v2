@@ -3,6 +3,9 @@ from datetime import date, timedelta
 from django.db.models import Count, Sum
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
+
+from rest_framework import status as http
+
 from django.utils import timezone
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -114,6 +117,61 @@ class LeaveRequestViewSet(HRBase):
         return self._review(request, False)
 
 
+
+
+class MyLeaveViewSet(viewsets.ViewSet):
+    """Self-service leave for any logged-in user who has an employee record."""
+    permission_classes = [IsAuthenticated]
+
+    def _employee(self, request):
+        return getattr(request.user, "employee", None)
+
+    def list(self, request):
+        emp = self._employee(request)
+        if not emp:
+            return Response({"linked": False, "detail": "Your account has no staff record. Please visit HR to be registered."})
+        year = timezone.localdate().year
+        types = m.LeaveType.objects.all()
+        balances = []
+        for lt in types:
+            remaining = services.leave_balance(emp, lt, year)
+            balances.append({"leave_type": lt.id, "leave_type_name": lt.name, "is_paid": lt.is_paid,
+                             "entitled": lt.days_per_year, "used": lt.days_per_year - remaining,
+                             "remaining": remaining})
+        reqs = m.LeaveRequest.objects.filter(employee=emp).select_related("leave_type")
+        return Response({
+            "linked": True,
+            "employee": {"id": emp.id, "employee_no": emp.employee_no, "full_name": emp.full_name, "status": emp.status},
+            "leave_types": [{"id": t.id, "name": t.name, "days_per_year": t.days_per_year} for t in types],
+            "balances": balances,
+            "requests": s.MyLeaveRequestSerializer(reqs, many=True).data,
+        })
+
+    def create(self, request):
+        emp = self._employee(request)
+        if not emp:
+            return Response({"detail": "Your account has no staff record. Please visit HR."}, status=403)
+        if emp.status == "EXITED":
+            return Response({"detail": "Your staff record is closed. Contact HR."}, status=403)
+        ser = s.MyLeaveRequestSerializer(data=request.data, context={"employee": emp})
+        ser.is_valid(raise_exception=True)
+        ser.save(employee=emp, days=ser.validated_data["days"])
+        return Response(ser.data, status=http.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        emp = self._employee(request)
+        leave = get_object_or_404(m.LeaveRequest, pk=pk, employee=emp) if emp else None
+        if not leave:
+            return Response({"detail": "Not found."}, status=404)
+        if leave.status != "PENDING":
+            return Response({"detail": "Only pending requests can be cancelled."}, status=400)
+        leave.status = "CANCELLED"
+        leave.save(update_fields=["status"])
+        return Response(s.MyLeaveRequestSerializer(leave).data)
+
+
+    
 class AttendanceViewSet(HRBase):
     serializer_class = s.AttendanceSerializer
     http_method_names = ["get", "post", "patch", "head", "options"]
