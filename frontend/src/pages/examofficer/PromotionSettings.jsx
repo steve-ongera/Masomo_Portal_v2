@@ -111,6 +111,10 @@ export default function PromotionSettings() {
     }, dry ? "Preview ready. Nothing was changed." : "Promotion complete.");
   };
 
+  const classesNeedingAttention = (report?.classes || []).filter(
+    (c) => c.repeating.length || c.held.length
+  );
+
   return (
     <div>
       <div className="page-header">
@@ -169,7 +173,11 @@ export default function PromotionSettings() {
         </div>
 
         <div className="p-3">
-          <div className={`status-panel mb-3 ${cfg.auto_promote_enabled ? "status-panel--active" : ""}`}>
+          <div
+            className={`status-panel mb-3 ${
+              cfg.auto_promote_enabled ? "status-panel--active" : ""
+            }`}
+          >
             <div className="form-check form-switch mb-0">
               <input
                 className="form-check-input"
@@ -224,7 +232,11 @@ export default function PromotionSettings() {
             </div>
           </div>
 
-          <div className={`status-panel mt-3 ${cfg.auto_activate_next_year ? "status-panel--active" : ""}`}>
+          <div
+            className={`status-panel mt-3 ${
+              cfg.auto_activate_next_year ? "status-panel--active" : ""
+            }`}
+          >
             <div className="form-check form-switch mb-0">
               <input
                 className="form-check-input"
@@ -250,11 +262,7 @@ export default function PromotionSettings() {
             <i className="bi bi-info-circle me-1"></i>
             These settings apply on the next automatic run
           </span>
-          <button
-            className="btn btn-primary"
-            disabled={busy}
-            onClick={save}
-          >
+          <button className="btn btn-primary" disabled={busy} onClick={save}>
             {busy ? (
               "Saving..."
             ) : (
@@ -336,7 +344,13 @@ export default function PromotionSettings() {
                       <div className="dm-card__num">{report.graduated}</div>
                     </div>
 
-                    <div className={`dm-card ${report.repeating > 0 ? "dm-card--warning" : "dm-card--primary"}`}>
+                    <div
+                      className={`dm-card ${
+                        report.repeating > 0
+                          ? "dm-card--warning"
+                          : "dm-card--primary"
+                      }`}
+                    >
                       <div className="dm-card__top">
                         <span className="dm-card__label">Repeating</span>
                         <span className="dm-card__icon">
@@ -346,7 +360,11 @@ export default function PromotionSettings() {
                       <div className="dm-card__num">{report.repeating}</div>
                     </div>
 
-                    <div className={`dm-card ${report.held > 0 ? "dm-card--danger" : "dm-card--primary"}`}>
+                    <div
+                      className={`dm-card ${
+                        report.held > 0 ? "dm-card--danger" : "dm-card--primary"
+                      }`}
+                    >
                       <div className="dm-card__top">
                         <span className="dm-card__label">Held for review</span>
                         <span className="dm-card__icon">
@@ -373,10 +391,105 @@ export default function PromotionSettings() {
                       {report.dry_run ? "Preview" : "Applied"}
                     </span>
                     <span>
-                      Academic year{" "}
-                      <strong>{report.academic_year}</strong>
+                      Academic year <strong>{report.academic_year}</strong>
                     </span>
                   </div>
+
+                  {/* Nothing left to promote */}
+                  {report.classes_processed === 0 &&
+                    !(report.errors?.length > 0) && (
+                      <div className="alert alert-primary mb-3" role="status">
+                        <i className="bi bi-info-circle me-1"></i>
+                        No unpromoted classes with active students were found
+                        for {report.academic_year}.
+                      </div>
+                    )}
+
+                  {/* Classes not yet promoted -> where they will go */}
+                  {report.classes?.length > 0 && (
+                    <div className="mb-3">
+                      <div className="section-label mb-2">
+                        {report.dry_run
+                          ? "Classes Not Yet Promoted"
+                          : "Classes Promoted In This Run"}{" "}
+                        ({report.classes.length})
+                      </div>
+                      <div className="table-responsive">
+                        <table className="table table-sm table-hover mb-0">
+                          <thead>
+                            <tr>
+                              <th>Class</th>
+                              <th>Students</th>
+                              <th>{report.dry_run ? "Will Move To" : "Moved To"}</th>
+                              <th>Year</th>
+                              <th>Promote</th>
+                              <th>Repeat</th>
+                              <th>Held</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {report.classes.map((c) => {
+                              const graduating = c.target === "Graduation";
+                              return (
+                                <tr key={c.classroom}>
+                                  <td>{c.classroom}</td>
+                                  <td>{c.students}</td>
+                                  <td>
+                                    {graduating ? (
+                                      <span className="badge badge-blue">
+                                        Graduates
+                                      </span>
+                                    ) : (
+                                      c.target
+                                    )}
+                                  </td>
+                                  <td>{graduating ? "—" : c.target_year}</td>
+                                  <td>{graduating ? c.graduated : c.promoted}</td>
+                                  <td>{c.repeating.length}</td>
+                                  <td>{c.held.length}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Already promoted classes */}
+                  {report.already_promoted?.length > 0 && (
+                    <div className="mb-3">
+                      <div className="section-label mb-2">
+                        Already Promoted ({report.already_promoted.length})
+                      </div>
+                      <div className="table-responsive">
+                        <table className="table table-sm table-hover mb-0">
+                          <thead>
+                            <tr>
+                              <th>Class</th>
+                              <th>Moved To</th>
+                              <th>Students</th>
+                              <th>Date</th>
+                              <th>By</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {report.already_promoted.map((p) => (
+                              <tr key={p.classroom}>
+                                <td>{p.classroom}</td>
+                                <td>{p.target}</td>
+                                <td>{p.students}</td>
+                                <td>
+                                  {new Date(p.promoted_at).toLocaleString()}
+                                </td>
+                                <td>{p.promoted_by}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Errors */}
                   {report.errors?.length > 0 && (
@@ -386,7 +499,10 @@ export default function PromotionSettings() {
                         {report.errors.length} issue
                         {report.errors.length === 1 ? "" : "s"} encountered
                       </div>
-                      <ul className="mb-0 small" style={{ paddingLeft: "1.2rem" }}>
+                      <ul
+                        className="mb-0 small"
+                        style={{ paddingLeft: "1.2rem" }}
+                      >
                         {report.errors.map((x) => (
                           <li key={x.classroom}>
                             <strong>{x.classroom}</strong> — {x.reason}
@@ -397,69 +513,65 @@ export default function PromotionSettings() {
                   )}
 
                   {/* Classes with repeating / held students */}
-                  {(report.classes || []).filter(
-                    (c) => c.repeating.length || c.held.length
-                  ).length > 0 && (
+                  {classesNeedingAttention.length > 0 && (
                     <div>
                       <div className="section-label mb-2">
                         Classes Needing Attention
                       </div>
-                      {(report.classes || [])
-                        .filter((c) => c.repeating.length || c.held.length)
-                        .map((c) => (
-                          <div key={c.classroom} className="table-wrap mb-2">
-                            <div className="p-3">
-                              <div className="cell-name mb-2">
-                                <i className="bi bi-people me-1 text-muted-soft"></i>
-                                {c.classroom}
-                              </div>
-
-                              {c.repeating.length > 0 && (
-                                <div className="mb-2">
-                                  <div className="section-label mb-1 text-gold">
-                                    Repeating
-                                  </div>
-                                  <ul
-                                    className="mb-0 small"
-                                    style={{
-                                      paddingLeft: "1.2rem",
-                                      color: "var(--ink-700)",
-                                    }}
-                                  >
-                                    {c.repeating.map((s) => (
-                                      <li key={s.admission_no}>
-                                        <strong>{s.name}</strong> (
-                                        {s.admission_no}) — {s.reason}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              )}
-
-                              {c.held.length > 0 && (
-                                <div>
-                                  <div className="section-label mb-1 text-owe">
-                                    Held for Review
-                                  </div>
-                                  <ul
-                                    className="mb-0 small"
-                                    style={{
-                                      paddingLeft: "1.2rem",
-                                      color: "var(--ink-700)",
-                                    }}
-                                  >
-                                    {c.held.map((s) => (
-                                      <li key={s.admission_no}>
-                                        <strong>{s.name}</strong> (
-                                        {s.admission_no}) — {s.reason}
-                                      </li>
-                                    ))}
-                                  </ul>
-                                </div>
-                              )}
+                      {classesNeedingAttention.map((c) => (
+                        <div key={c.classroom} className="table-wrap mb-2">
+                          <div className="p-3">
+                            <div className="cell-name mb-2">
+                              <i className="bi bi-people me-1 text-muted-soft"></i>
+                              {c.classroom}
                             </div>
+
+                            {c.repeating.length > 0 && (
+                              <div className="mb-2">
+                                <div className="section-label mb-1 text-gold">
+                                  Repeating
+                                </div>
+                                <ul
+                                  className="mb-0 small"
+                                  style={{
+                                    paddingLeft: "1.2rem",
+                                    color: "var(--ink-700)",
+                                  }}
+                                >
+                                  {c.repeating.map((s) => (
+                                    <li key={s.admission_no}>
+                                      <strong>{s.name}</strong> (
+                                      {s.admission_no}) — {s.reason}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+
+                            {c.held.length > 0 && (
+                              <div>
+                                <div className="section-label mb-1 text-owe">
+                                  Held for Review
+                                </div>
+                                <ul
+                                  className="mb-0 small"
+                                  style={{
+                                    paddingLeft: "1.2rem",
+                                    color: "var(--ink-700)",
+                                  }}
+                                >
+                                  {c.held.map((s) => (
+                                    <li key={s.admission_no}>
+                                      <strong>{s.name}</strong> (
+                                      {s.admission_no}) — {s.reason}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
                           </div>
-                        ))}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </>

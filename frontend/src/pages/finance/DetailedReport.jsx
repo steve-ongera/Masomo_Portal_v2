@@ -12,10 +12,11 @@ const formatKES = (n) =>
 
 const num = (n) => Number(n || 0).toLocaleString("en-KE");
 
+// className is now a status-pill tone (the PDF and print code only use `label`)
 const STATUS_BADGE = {
-  paid: { className: "badge-success", label: "Paid", icon: "bi-check-circle" },
-  partial: { className: "badge-warning", label: "Partial", icon: "bi-hourglass-split" },
-  unpaid: { className: "badge-danger", label: "Unpaid", icon: "bi-x-circle" },
+  paid: { className: "status-pill--success", label: "Paid" },
+  partial: { className: "status-pill--warning", label: "Partial" },
+  unpaid: { className: "status-pill--danger", label: "Unpaid" },
 };
 
 const initials = (name) =>
@@ -997,31 +998,104 @@ export default function FinanceDetailedReport() {
     </option>
   ));
 
+  const TABS = [
+    { key: "invoices", label: "Invoices", icon: "bi-receipt" },
+    { key: "terms", label: "Term Summary", icon: "bi-calendar3" },
+    { key: "debtors", label: "Top Debtors", icon: "bi-trophy" },
+    { key: "balances", label: "Student Balances", icon: "bi-wallet2" },
+  ];
+
+  const spinner = <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>;
+
   return (
     <div>
       {/* ================= PAGE HEADER ================= */}
       <div className="page-header">
-        <div>
-          <h1 className="page-title">Detailed Report</h1>
-          <p className="page-subtitle">Every invoice, filterable by term, class, and payment status.</p>
+        <div className="page-header__lead">
+          <span className="page-header__icon" aria-hidden="true">
+            <i className="bi bi-receipt"></i>
+          </span>
+          <div className="page-header__text">
+            <h1 className="page-title">Detailed Report</h1>
+            <p className="page-subtitle">Every invoice, filterable by term, class, and payment status.</p>
+          </div>
         </div>
-        {academicYears.length > 0 && activeTab !== "balances" && (
-          <ul className="nav nav-pills academic-year-tabs mb-0">
-            {academicYears.map((ay) => (
-              <li className="nav-item" key={ay.id}>
-                <button
-                  type="button"
-                  className={`nav-link ${selectedYear === ay.id ? "active" : ""}`}
-                  onClick={() => handleTabClick(ay.id)}
-                >
-                  {ay.year}
-                  {ay.is_current && <span className="status-dot status-dot--pending ms-2 me-0"></span>}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+
+        <div className="page-header__actions">
+          {activeTab === "balances" && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleDownloadByClass}
+              disabled={pdfBusy !== null}
+              title="Download every student's balance, grouped by class (each class starts on a new page)"
+            >
+              {pdfBusy === "classes" ? (
+                <>
+                  {spinner} Preparing...
+                </>
+              ) : (
+                <>
+                  <i className="bi bi-files"></i> All Students by Class
+                </>
+              )}
+            </button>
+          )}
+          {showExportButtons && (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => handleExport("print")}
+                disabled={pdfBusy !== null}
+              >
+                {pdfBusy === "print" ? (
+                  <>
+                    {spinner} Preparing...
+                  </>
+                ) : (
+                  <>
+                    <i className="bi bi-printer"></i> Print
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => handleExport("download")}
+                disabled={pdfBusy !== null}
+              >
+                {pdfBusy === "download" ? (
+                  <>
+                    {spinner} Generating PDF...
+                  </>
+                ) : (
+                  <>
+                    <i className="bi bi-file-earmark-pdf"></i> Download PDF
+                  </>
+                )}
+              </button>
+            </>
+          )}
+        </div>
       </div>
+
+      {academicYears.length > 0 && activeTab !== "balances" && (
+        <ul className="nav nav-pills academic-year-tabs mb-3">
+          {academicYears.map((ay) => (
+            <li className="nav-item" key={ay.id}>
+              <button
+                type="button"
+                className={`nav-link ${selectedYear === ay.id ? "active" : ""}`}
+                onClick={() => handleTabClick(ay.id)}
+              >
+                {ay.year}
+                {ay.is_current && <span className="status-dot status-dot--pending ms-2 me-0"></span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {error && (
         <div className="alert alert-danger alert-dismissible fade show" role="alert">
@@ -1057,149 +1131,43 @@ export default function FinanceDetailedReport() {
         </div>
       )}
 
-      <div className="table-wrap">
-        <div className="table-wrap__header">
-          <div>
-            <span className="chart-card__title">
-              <i className="bi bi-receipt me-2 text-brand"></i>
-              Detailed Report
-            </span>
-            <div className="chart-card__subtitle">
-              {activeTab === "invoices" && `${count} invoice${count !== 1 ? "s" : ""}`}
-              {activeTab === "terms" && "Collections by term"}
-              {activeTab === "debtors" && "Largest outstanding balances"}
-              {activeTab === "balances" && `${balanceCount} student${balanceCount !== 1 ? "s" : ""}`}
-            </div>
-          </div>
-          <div className="d-flex align-items-center gap-2 flex-wrap">
-            {activeTab === "balances" && (
-              <button
-                type="button"
-                className="btn btn-sm btn-outline-success"
-                onClick={handleDownloadByClass}
-                disabled={pdfBusy !== null}
-                title="Download every student's balance, grouped by class (each class starts on a new page)"
-              >
-                {pdfBusy === "classes" ? (
-                  <>
-                    <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                    Preparing...
-                  </>
-                ) : (
-                  <>
-                    <i className="bi bi-files"></i> All Students by Class
-                  </>
-                )}
-              </button>
-            )}
-            {showExportButtons && (
-              <>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-outline-secondary"
-                  onClick={() => handleExport("print")}
-                  disabled={pdfBusy !== null}
-                >
-                  {pdfBusy === "print" ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                      Preparing...
-                    </>
-                  ) : (
-                    <>
-                      <i className="bi bi-printer"></i> Print
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-outline-primary"
-                  onClick={() => handleExport("download")}
-                  disabled={pdfBusy !== null}
-                >
-                  {pdfBusy === "download" ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                      Generating PDF...
-                    </>
-                  ) : (
-                    <>
-                      <i className="bi bi-file-earmark-pdf"></i> Download PDF
-                    </>
-                  )}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
+      {/* ================= TABS ================= */}
+      <div className="page-tabs" role="tablist">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === t.key}
+            className={`page-tab${activeTab === t.key ? " is-active" : ""}`}
+            onClick={() => setActiveTab(t.key)}
+          >
+            <i className={`bi ${t.icon}`} aria-hidden="true"></i>
+            <span>{t.label}</span>
+          </button>
+        ))}
+      </div>
 
-        {/* ---- Tabs ---- */}
-        <div className="table-tabs">
-          <ul className="nav nav-tabs" role="tablist">
-            <li className="nav-item" role="presentation">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "invoices"}
-                className={`nav-link ${activeTab === "invoices" ? "active" : ""}`}
-                onClick={() => setActiveTab("invoices")}
-              >
-                <i className="bi bi-receipt me-1"></i>
-                Invoices
-              </button>
-            </li>
-            <li className="nav-item" role="presentation">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "terms"}
-                className={`nav-link ${activeTab === "terms" ? "active" : ""}`}
-                onClick={() => setActiveTab("terms")}
-              >
-                <i className="bi bi-calendar3 me-1"></i>
-                Term Summary
-              </button>
-            </li>
-            <li className="nav-item" role="presentation">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "debtors"}
-                className={`nav-link ${activeTab === "debtors" ? "active" : ""}`}
-                onClick={() => setActiveTab("debtors")}
-              >
-                <i className="bi bi-trophy me-1 text-gold"></i>
-                Top Debtors
-              </button>
-            </li>
-            <li className="nav-item" role="presentation">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === "balances"}
-                className={`nav-link ${activeTab === "balances" ? "active" : ""}`}
-                onClick={() => setActiveTab("balances")}
-              >
-                <i className="bi bi-wallet2 me-1 text-brand"></i>
-                Student Balances
-              </button>
-            </li>
-          </ul>
-        </div>
-
+      <section className="page-card">
         {/* ================= INVOICES ================= */}
         {activeTab === "invoices" && (
           <>
-            <div className="toolbar toolbar--flush">
-              <div className="toolbar__search">
-                <i className="bi bi-search"></i>
+            <div className="search-bar">
+              <div className="search-bar__field">
+                <i className="bi bi-search" aria-hidden="true"></i>
                 <input
                   type="text"
                   className="form-control"
                   placeholder="Search name or admission no…"
+                  aria-label="Search invoices"
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
                 />
+                {searchInput && (
+                  <button type="button" className="search-bar__clear" onClick={() => setSearchInput("")} aria-label="Clear search">
+                    <i className="bi bi-x-lg"></i>
+                  </button>
+                )}
               </div>
 
               <select
@@ -1248,10 +1216,20 @@ export default function FinanceDetailedReport() {
               </select>
 
               {hasActiveFilters && (
-                <button className="btn btn-sm btn-light" onClick={clearFilters}>
+                <button className="btn btn-secondary" onClick={clearFilters}>
                   <i className="bi bi-x-lg"></i> Clear
                 </button>
               )}
+            </div>
+
+            <div className="table-wrap__header" style={{ borderTop: "1px solid var(--border-color)" }}>
+              <span className="panel-title">
+                <i className="bi bi-receipt text-brand"></i>
+                Invoices
+              </span>
+              <span className="chart-card__subtitle">
+                {count} invoice{count !== 1 ? "s" : ""}
+              </span>
             </div>
 
             {loading ? (
@@ -1292,7 +1270,7 @@ export default function FinanceDetailedReport() {
                             </div>
                           </td>
                           <td>
-                            <span className="badge badge-neutral">{inv.classroom}</span>
+                            <span className="chip">{inv.classroom}</span>
                           </td>
                           <td>{inv.term}</td>
                           <td className="cell-num">{formatKES(inv.due)}</td>
@@ -1303,10 +1281,7 @@ export default function FinanceDetailedReport() {
                             </span>
                           </td>
                           <td>
-                            <span className={`badge ${badge.className}`}>
-                              <i className={`bi ${badge.icon} me-1`}></i>
-                              {badge.label}
-                            </span>
+                            <span className={`status-pill ${badge.className}`}>{badge.label}</span>
                           </td>
                         </tr>
                       );
@@ -1315,102 +1290,141 @@ export default function FinanceDetailedReport() {
                 </table>
               </div>
             )}
+
+            {!loading && rows.length > 0 && (
+              <Pagination
+                currentPage={page}
+                totalPages={totalPages}
+                onPageChange={handlePageChange}
+                itemsPerPage={itemsPerPage}
+                setItemsPerPage={setItemsPerPage}
+                startIndex={(page - 1) * pageSize}
+                endIndex={Math.min(page * pageSize, count)}
+                totalItems={count}
+              />
+            )}
           </>
         )}
 
         {/* ================= TERM SUMMARY ================= */}
-        {activeTab === "terms" &&
-          (loading ? (
-            <TableSkeleton rows={4} columns={4} />
-          ) : !result?.term_summary?.length ? (
-            <div className="empty-state">
-              <i className="bi bi-calendar3"></i>
-              <h6>No term data</h6>
+        {activeTab === "terms" && (
+          <>
+            <div className="table-wrap__header">
+              <span className="panel-title">
+                <i className="bi bi-calendar3 text-brand"></i>
+                Term Summary
+              </span>
+              <span className="chart-card__subtitle">Collections by term</span>
             </div>
-          ) : (
-            <div className="table-responsive">
-              <table className="table table-hover mb-0">
-                <thead>
-                  <tr>
-                    <th>Term</th>
-                    <th className="text-end">Due</th>
-                    <th className="text-end">Paid</th>
-                    <th className="text-end">Outstanding</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.term_summary.map((t) => (
-                    <tr key={t.term}>
-                      <td className="cell-name">{t.term}</td>
-                      <td className="cell-num">{formatKES(t.due)}</td>
-                      <td className="cell-num text-ok">{formatKES(t.paid)}</td>
-                      <td className="cell-num">
-                        <span className={t.outstanding > 0 ? "text-owe fw-semibold" : "cell-muted"}>
-                          {formatKES(t.outstanding)}
-                        </span>
-                      </td>
+            {loading ? (
+              <TableSkeleton rows={4} columns={4} />
+            ) : !result?.term_summary?.length ? (
+              <div className="empty-state">
+                <i className="bi bi-calendar3"></i>
+                <h6>No term data</h6>
+              </div>
+            ) : (
+              <div className="table-responsive">
+                <table className="table table-hover mb-0">
+                  <thead>
+                    <tr>
+                      <th>Term</th>
+                      <th className="text-end">Due</th>
+                      <th className="text-end">Paid</th>
+                      <th className="text-end">Outstanding</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
+                  </thead>
+                  <tbody>
+                    {result.term_summary.map((t) => (
+                      <tr key={t.term}>
+                        <td className="cell-name">{t.term}</td>
+                        <td className="cell-num">{formatKES(t.due)}</td>
+                        <td className="cell-num text-ok">{formatKES(t.paid)}</td>
+                        <td className="cell-num">
+                          <span className={t.outstanding > 0 ? "text-owe fw-semibold" : "cell-muted"}>
+                            {formatKES(t.outstanding)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
 
         {/* ================= TOP DEBTORS ================= */}
-        {activeTab === "debtors" &&
-          (loading ? (
-            <TableSkeleton rows={5} columns={3} />
-          ) : !result?.top_debtors?.length ? (
-            <div className="empty-state">
-              <i className="bi bi-emoji-smile"></i>
-              <h6>No outstanding debtors</h6>
+        {activeTab === "debtors" && (
+          <>
+            <div className="table-wrap__header">
+              <span className="panel-title">
+                <i className="bi bi-trophy text-gold"></i>
+                Top Debtors
+              </span>
+              <span className="chart-card__subtitle">Largest outstanding balances</span>
             </div>
-          ) : (
-            <div className="table-responsive">
-              <table className="table table-hover mb-0">
-                <thead>
-                  <tr>
-                    <th>Student</th>
-                    <th>Class</th>
-                    <th className="text-end">Owing</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.top_debtors.map((d) => (
-                    <tr key={d.admission_no}>
-                      <td>
-                        <div className="table-avatar-cell">
-                          <div className="avatar-sm">{initials(d.name)}</div>
-                          <span>
-                            <span className="cell-name">{d.name}</span>{" "}
-                            <span className="cell-mono cell-muted">({d.admission_no})</span>
-                          </span>
-                        </div>
-                      </td>
-                      <td>
-                        <span className="badge badge-neutral">{d.classroom}</span>
-                      </td>
-                      <td className="cell-num text-owe fw-semibold">{formatKES(d.outstanding)}</td>
+            {loading ? (
+              <TableSkeleton rows={5} columns={3} />
+            ) : !result?.top_debtors?.length ? (
+              <div className="empty-state">
+                <i className="bi bi-emoji-smile"></i>
+                <h6>No outstanding debtors</h6>
+              </div>
+            ) : (
+              <div className="table-responsive">
+                <table className="table table-hover mb-0">
+                  <thead>
+                    <tr>
+                      <th>Student</th>
+                      <th>Class</th>
+                      <th className="text-end">Owing</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
+                  </thead>
+                  <tbody>
+                    {result.top_debtors.map((d) => (
+                      <tr key={d.admission_no}>
+                        <td>
+                          <div className="table-avatar-cell">
+                            <div className="avatar-sm">{initials(d.name)}</div>
+                            <span>
+                              <span className="cell-name">{d.name}</span>{" "}
+                              <span className="cell-mono cell-muted">({d.admission_no})</span>
+                            </span>
+                          </div>
+                        </td>
+                        <td>
+                          <span className="chip">{d.classroom}</span>
+                        </td>
+                        <td className="cell-num text-owe fw-semibold">{formatKES(d.outstanding)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
 
         {/* ================= STUDENT BALANCES ================= */}
         {activeTab === "balances" && (
           <>
-            <div className="toolbar toolbar--flush">
-              <div className="toolbar__search">
-                <i className="bi bi-search"></i>
+            <div className="search-bar">
+              <div className="search-bar__field">
+                <i className="bi bi-search" aria-hidden="true"></i>
                 <input
                   type="text"
                   className="form-control"
                   placeholder="Search name or admission no…"
+                  aria-label="Search student balances"
                   value={balanceSearchInput}
                   onChange={(e) => setBalanceSearchInput(e.target.value)}
                 />
+                {balanceSearchInput && (
+                  <button type="button" className="search-bar__clear" onClick={() => setBalanceSearchInput("")} aria-label="Clear search">
+                    <i className="bi bi-x-lg"></i>
+                  </button>
+                )}
               </div>
 
               <select
@@ -1462,14 +1476,14 @@ export default function FinanceDetailedReport() {
               />
 
               {hasActiveBalanceFilters && (
-                <button className="btn btn-sm btn-light" onClick={clearBalanceFilters}>
+                <button className="btn btn-secondary" onClick={clearBalanceFilters}>
                   <i className="bi bi-x-lg"></i> Clear
                 </button>
               )}
             </div>
 
             {!balanceLoading && balanceCount > 0 && (
-              <div className="summary-strip">
+              <div className="summary-strip" style={{ borderTop: "1px solid var(--border-color)" }}>
                 <i className="bi bi-people"></i>
                 <span>
                   <strong>{balanceSummary.total_students}</strong> student
@@ -1519,7 +1533,7 @@ export default function FinanceDetailedReport() {
                             </div>
                           </td>
                           <td>
-                            <span className="badge badge-neutral">{s.classroom}</span>
+                            <span className="chip">{s.classroom}</span>
                           </td>
                           <td>
                             <span className="badge badge-neutral">{s.curriculum_type}</span>
@@ -1532,21 +1546,20 @@ export default function FinanceDetailedReport() {
                             </span>
                           </td>
                           <td>
-                            <span className={`badge ${badge.className}`}>
-                              <i className={`bi ${badge.icon} me-1`}></i>
-                              {badge.label}
-                            </span>
+                            <span className={`status-pill ${badge.className}`}>{badge.label}</span>
                           </td>
-                          <td className="text-center">
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-outline-secondary btn-icon"
-                              title="Print this student's balance statement"
-                              aria-label="Print this student's balance statement"
-                              onClick={() => handlePrintStudentBalance(s)}
-                            >
-                              <i className="bi bi-printer"></i>
-                            </button>
+                          <td>
+                            <div className="row-actions">
+                              <button
+                                type="button"
+                                className="btn btn-icon"
+                                title="Print this student's balance statement"
+                                aria-label="Print this student's balance statement"
+                                onClick={() => handlePrintStudentBalance(s)}
+                              >
+                                <i className="bi bi-printer"></i>
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -1555,36 +1568,22 @@ export default function FinanceDetailedReport() {
                 </table>
               </div>
             )}
+
+            {!balanceLoading && balanceRows.length > 0 && (
+              <Pagination
+                currentPage={balancePage}
+                totalPages={balanceTotalPages}
+                onPageChange={handleBalancePageChange}
+                itemsPerPage={balanceItemsPerPage}
+                setItemsPerPage={setBalanceItemsPerPage}
+                startIndex={(balancePage - 1) * balanceItemsPerPage}
+                endIndex={Math.min(balancePage * balanceItemsPerPage, balanceCount)}
+                totalItems={balanceCount}
+              />
+            )}
           </>
         )}
-      </div>
-
-      {/* Pagination sits below the card, same as the Students page */}
-      {activeTab === "invoices" && !loading && rows.length > 0 && (
-        <Pagination
-          currentPage={page}
-          totalPages={totalPages}
-          onPageChange={handlePageChange}
-          itemsPerPage={itemsPerPage}
-          setItemsPerPage={setItemsPerPage}
-          startIndex={(page - 1) * pageSize}
-          endIndex={Math.min(page * pageSize, count)}
-          totalItems={count}
-        />
-      )}
-
-      {activeTab === "balances" && !balanceLoading && balanceRows.length > 0 && (
-        <Pagination
-          currentPage={balancePage}
-          totalPages={balanceTotalPages}
-          onPageChange={handleBalancePageChange}
-          itemsPerPage={balanceItemsPerPage}
-          setItemsPerPage={setBalanceItemsPerPage}
-          startIndex={(balancePage - 1) * balanceItemsPerPage}
-          endIndex={Math.min(balancePage * balanceItemsPerPage, balanceCount)}
-          totalItems={balanceCount}
-        />
-      )}
+      </section>
     </div>
   );
 }

@@ -169,7 +169,7 @@ const Communications = lazy(() => import("./pages/Communications"));
 const Messages = lazy(() => import("./pages/Messages"));
 
 // hr — HR officer pages (/hr/*) plus staff self-service (QR sign in/out,
-// own payslips). Backed by the separate `hr` Django app.
+// own payslips, own leave requests). Backed by the separate `hr` Django app.
 const HRDashboard = lazy(() => import("./pages/hr/Dashboard"));
 const HREmployees = lazy(() => import("./pages/hr/Employees"));
 const HRRecruitment = lazy(() => import("./pages/hr/Recruitment"));
@@ -180,6 +180,7 @@ const HRPayroll = lazy(() => import("./pages/hr/Payroll"));
 const HRReports = lazy(() => import("./pages/hr/Reports"));
 const StaffScan = lazy(() => import("./pages/hr/Scan"));
 const MyPayslips = lazy(() => import("./pages/hr/MyPayslips"));
+const MyLeave = lazy(() => import("./pages/hr/MyLeave"));
 
 // library — librarian pages (/librarian/*) plus the learner/parent view.
 // Backed by the separate `library` Django app.
@@ -266,14 +267,15 @@ function RoleSection({ role, children }) {
 // officer) can verify one.
 const GATEPASS_VERIFIER_ROLES = ["ADMIN", "PRINCIPAL", "SECRETARY", "TEACHER", "PARENT", "FINANCE", "EXAM_OFFICER"];
 
-// Everyone who is a school employee: can scan the gate QR to sign in/out
-// and read their own released payslips. This is EVERY role except STUDENT
-// and PARENT:
+// Everyone who is a school employee: can scan the gate QR to sign in/out,
+// read their own released payslips and request leave. This is EVERY role
+// except STUDENT and PARENT:
 //   ADMIN, PRINCIPAL, SECRETARY, EXAM_OFFICER, TEACHER, FINANCE, HR,
 //   LIBRARIAN, CAFETERIA, PROCUREMENT, HOSTEL_WARDEN and STAFF (support
 //   staff / ICT / administration employees with no other role).
-// The `hr` backend must accept all of these roles as well, otherwise the
-// page will open but its API calls will 403.
+// The `hr` backend self-service endpoints (my-payslips, scan, my-leave)
+// only require a login + a linked employee record, so all of these roles
+// work. A user with no employee record sees a "visit HR" message.
 const STAFF_ROLES = [
   "ADMIN", "PRINCIPAL", "SECRETARY", "EXAM_OFFICER",
   "TEACHER", "FINANCE", "HR", "LIBRARIAN", "CAFETERIA", "PROCUREMENT", "STAFF",
@@ -663,12 +665,16 @@ export default function App() {
 
             {/* STAFF SELF-SERVICE — "/my-attendance/scan/:token" is the deep link
                 the gate QR opens on the employee's own phone; "/my-payslips"
-                lists only the signed-in employee's released payslips.
+                lists only the signed-in employee's released payslips;
+                "/my-leave" lets the employee request leave (sick, annual...)
+                and follow its approval by HR. A user with no employee record
+                is told to visit HR.
                 Open to every role except STUDENT and PARENT - see
                 STAFF_ROLES above. */}
             <Route path="/my-attendance/scan" element={<Guarded roles={STAFF_ROLES}><StaffScan /></Guarded>} />
             <Route path="/my-attendance/scan/:token" element={<Guarded roles={STAFF_ROLES}><StaffScan /></Guarded>} />
             <Route path="/my-payslips" element={<Guarded roles={STAFF_ROLES}><MyPayslips /></Guarded>} />
+            <Route path="/my-leave" element={<Guarded roles={STAFF_ROLES}><MyLeave /></Guarded>} />
 
             {/* COMMUNICATIONS - Admin, Finance, Principal, Secretary and
                 Examination Officer can all broadcast; each keeps its own

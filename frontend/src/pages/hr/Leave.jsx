@@ -8,6 +8,7 @@ const STATUS_FILTERS = [
   { value: "PENDING", label: "Pending" },
   { value: "APPROVED", label: "Approved" },
   { value: "REJECTED", label: "Rejected" },
+  { value: "CANCELLED", label: "Cancelled" },
   { value: "", label: "All" },
 ];
 
@@ -41,7 +42,42 @@ const formatDate = (iso) => {
   }
 };
 
+const formatDateTime = (iso) => {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+};
+
 const daysLabel = (n) => `${n} day${n === 1 ? "" : "s"}`;
+
+// one label/value row inside the details modal
+const DetailRow = ({ label, children }) => (
+  <div
+    style={{
+      display: "flex",
+      gap: "0.75rem",
+      padding: "0.45rem 0",
+      borderBottom: "1px solid var(--border-color)",
+      fontSize: "var(--fs-sm, 0.875rem)",
+    }}
+  >
+    <div style={{ width: "130px", flexShrink: 0, color: "var(--ink-600)", fontSize: "var(--fs-xs)" }}>
+      {label}
+    </div>
+    <div style={{ flex: 1, color: "var(--ink-900)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+      {children}
+    </div>
+  </div>
+);
 
 export default function Leave() {
   const [rows, setRows] = useState([]);
@@ -50,6 +86,9 @@ export default function Leave() {
 
   const [msg, setMsg] = useState("");
   const [msgType, setMsgType] = useState("info");
+
+  const [showDetailModal, setShowDetailModal] = useState(false);
+  const [detailTarget, setDetailTarget] = useState(null);
 
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectTarget, setRejectTarget] = useState(null);
@@ -78,6 +117,11 @@ export default function Leave() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const openDetail = (row) => {
+    setDetailTarget(row);
+    setShowDetailModal(true);
+  };
 
   const openApprove = (row) => {
     setApproveTarget(row);
@@ -145,12 +189,15 @@ export default function Leave() {
   const canDecide = (row) => row.status === "PENDING";
   const isPendingView = statusFilter === "PENDING";
 
+  const metaFor = (status) =>
+    STATUS_META[status] || { badge: "badge-neutral", dot: "status-dot--offline", label: status };
+
   return (
     <div>
       <Breadcrumb
         items={[
-          { label: "Dashboard", href: "/admin" },
-          { label: "HR", href: "/admin/hr" },
+          { label: "Dashboard", href: "/hr" },
+          { label: "HR", href: "/hr" },
           { label: "Leave Requests", href: "#" },
         ]}
       />
@@ -209,11 +256,7 @@ export default function Leave() {
             </span>
             <div className="d-flex flex-wrap gap-2 align-items-center">
               {Object.entries(summary.counts).map(([key, count]) => {
-                const meta = STATUS_META[key] || {
-                  badge: "badge-neutral",
-                  dot: "status-dot--offline",
-                  label: key,
-                };
+                const meta = metaFor(key);
                 if (!count) return null;
                 return (
                   <span key={key} className={`badge ${meta.badge}`}>
@@ -255,16 +298,12 @@ export default function Leave() {
                   <th style={{ width: "110px" }}>Working Days</th>
                   <th>Reason</th>
                   <th style={{ width: "160px" }}>Status</th>
-                  <th style={{ width: "160px" }}>Actions</th>
+                  <th style={{ width: "230px" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
-                  const meta = STATUS_META[r.status] || {
-                    badge: "badge-neutral",
-                    dot: "status-dot--offline",
-                    label: r.status,
-                  };
+                  const meta = metaFor(r.status);
                   const typeAccent = LEAVE_TYPE_ACCENT[r.leave_type_code] || "badge-neutral";
                   return (
                     <tr key={r.id}>
@@ -309,22 +348,28 @@ export default function Leave() {
                         </span>
                       </td>
                       <td>
-                        {canDecide(r) ? (
-                          <div className="table-actions">
-                            <button className="btn btn-sm btn-success" onClick={() => openApprove(r)} title="Approve this request">
-                              <i className="bi bi-check2 me-1"></i>
-                              Approve
-                            </button>
-                            <button className="btn btn-sm btn-outline-danger" onClick={() => openReject(r)} title="Reject this request">
-                              <i className="bi bi-x-lg me-1"></i>
-                              Reject
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="cell-muted" style={{ fontSize: "var(--fs-xs)" }}>
-                            {r.status === "APPROVED" ? "Approved" : r.status === "REJECTED" ? "Rejected" : "No action"}
-                          </span>
-                        )}
+                        <div className="table-actions">
+                          <button
+                            className="btn btn-sm btn-outline-secondary"
+                            onClick={() => openDetail(r)}
+                            title="View details"
+                            aria-label="View details"
+                          >
+                            <i className="bi bi-eye"></i>
+                          </button>
+                          {canDecide(r) && (
+                            <>
+                              <button className="btn btn-sm btn-success" onClick={() => openApprove(r)} title="Approve this request">
+                                <i className="bi bi-check2 me-1"></i>
+                                Approve
+                              </button>
+                              <button className="btn btn-sm btn-outline-danger" onClick={() => openReject(r)} title="Reject this request">
+                                <i className="bi bi-x-lg me-1"></i>
+                                Reject
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -335,6 +380,87 @@ export default function Leave() {
         )}
       </div>
 
+      {/* ---------- View details ---------- */}
+      <Modal show={showDetailModal} onClose={() => setShowDetailModal(false)} title="Leave Request Details">
+        {detailTarget && (
+          <div>
+            <div className="d-flex align-items-center gap-3 mb-3">
+              <div className="avatar-sm">
+                {(detailTarget.employee_name || "")
+                  .split(" ")
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .map((n) => n[0])
+                  .join("")}
+              </div>
+              <div>
+                <div style={{ fontWeight: 600, color: "var(--ink-900)" }}>
+                  {detailTarget.employee_name || "—"}
+                </div>
+                <span className={`badge ${metaFor(detailTarget.status).badge}`}>
+                  <span className={`status-dot ${metaFor(detailTarget.status).dot}`}></span>
+                  {metaFor(detailTarget.status).label}
+                </span>
+              </div>
+            </div>
+
+            <DetailRow label="Leave type">
+              <span className={`badge ${LEAVE_TYPE_ACCENT[detailTarget.leave_type_code] || "badge-neutral"}`}>
+                {detailTarget.leave_type_name || "—"}
+              </span>
+            </DetailRow>
+            <DetailRow label="From">{formatDate(detailTarget.start_date)}</DetailRow>
+            <DetailRow label="To">{formatDate(detailTarget.end_date)}</DetailRow>
+            <DetailRow label="Working days">{daysLabel(detailTarget.days)}</DetailRow>
+            <DetailRow label="Reason">{detailTarget.reason || "—"}</DetailRow>
+            <DetailRow label="Requested on">{formatDateTime(detailTarget.created_at)}</DetailRow>
+
+            {detailTarget.status !== "PENDING" && detailTarget.status !== "CANCELLED" && (
+              <>
+                <DetailRow label="Decided by">
+                  {detailTarget.reviewed_by_name || (detailTarget.reviewed_by ? "HR officer" : "—")}
+                </DetailRow>
+                <DetailRow label="Decided on">{formatDateTime(detailTarget.reviewed_at)}</DetailRow>
+                <DetailRow label="HR remarks">{detailTarget.review_remarks || "—"}</DetailRow>
+              </>
+            )}
+
+            <div className="mt-3 d-flex gap-2 justify-content-end">
+              <button type="button" className="btn btn-secondary" onClick={() => setShowDetailModal(false)}>
+                Close
+              </button>
+              {canDecide(detailTarget) && (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-outline-danger"
+                    onClick={() => {
+                      setShowDetailModal(false);
+                      openReject(detailTarget);
+                    }}
+                  >
+                    <i className="bi bi-x-lg me-1"></i>
+                    Reject
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-success"
+                    onClick={() => {
+                      setShowDetailModal(false);
+                      openApprove(detailTarget);
+                    }}
+                  >
+                    <i className="bi bi-check2 me-1"></i>
+                    Approve
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ---------- Approve ---------- */}
       <Modal show={showApproveModal} onClose={() => setShowApproveModal(false)} title="Approve Leave">
         {approveTarget && (
           <form onSubmit={confirmApprove}>
@@ -385,6 +511,7 @@ export default function Leave() {
         )}
       </Modal>
 
+      {/* ---------- Reject ---------- */}
       <Modal show={showRejectModal} onClose={() => setShowRejectModal(false)} title="Reject Leave">
         {rejectTarget && (
           <form onSubmit={confirmReject}>

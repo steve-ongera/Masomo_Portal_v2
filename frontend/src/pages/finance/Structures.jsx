@@ -425,15 +425,20 @@ export default function FinanceStructures() {
     <div>
       {/* Page Header */}
       <div className="page-header">
-        <div>
-          <h1 className="page-title">Fee Structures</h1>
-          <p className="page-subtitle">
-            Create a fee structure once per grade and term. Each is downloadable as a PDF to hand out to students.
-          </p>
+        <div className="page-header__lead">
+          <span className="page-header__icon" aria-hidden="true">
+            <i className="bi bi-cash-stack"></i>
+          </span>
+          <div className="page-header__text">
+            <h1 className="page-title">Fee Structures</h1>
+            <p className="page-subtitle">
+              Create a fee structure once per grade and term. Each is downloadable as a PDF to hand out to students.
+            </p>
+          </div>
         </div>
         <div className="page-header__actions">
-          <span className="badge badge-blue">
-            <i className="bi bi-cash-stack me-1"></i>
+          <span className="chip">
+            <i className="bi bi-cash-stack"></i>
             {structures.length} structure{structures.length !== 1 ? "s" : ""}
           </span>
         </div>
@@ -448,12 +453,15 @@ export default function FinanceStructures() {
       )}
 
       {/* Create Form */}
-      <div className="card mb-3">
-        <div className="card-header">
-          <i className="bi bi-plus-circle me-2 text-brand"></i>
-          New Fee Structure
-        </div>
-        <div className="card-body">
+      <section className="page-card">
+        <div className="page-card__body">
+          <h6 className="page-card__title">
+            <span>
+              <i className="bi bi-plus-circle" aria-hidden="true"></i>
+              New Fee Structure
+            </span>
+          </h6>
+
           <form onSubmit={submit}>
             <div className="row g-3 mb-3">
               <div className="col-md-4">
@@ -472,7 +480,9 @@ export default function FinanceStructures() {
                 </select>
               </div>
               <div className="col-md-4">
-                <label className="form-label">Grade</label>
+                <label className="form-label">
+                  Grade <span className="req">*</span>
+                </label>
                 <select
                   className="form-select"
                   required
@@ -488,7 +498,9 @@ export default function FinanceStructures() {
                 </select>
               </div>
               <div className="col-md-4">
-                <label className="form-label">Term</label>
+                <label className="form-label">
+                  Term <span className="req">*</span>
+                </label>
                 <select
                   className="form-select"
                   required
@@ -514,10 +526,12 @@ export default function FinanceStructures() {
               </div>
             )}
 
-            <div className="settings-section__title">Fee Items</div>
-            <div className="settings-section__desc mb-2">
+            <h6 className="modal-section-title">
+              <i className="bi bi-list-ul" aria-hidden="true"></i>Fee Items
+            </h6>
+            <p className="panel__text mb-3">
               Add each charge for this grade and term, e.g. Tuition, Boarding or Activity fee.
-            </div>
+            </p>
             {items.map((item, idx) => (
               <div className="item-row" key={idx}>
                 <input
@@ -535,7 +549,7 @@ export default function FinanceStructures() {
                 />
                 <button
                   type="button"
-                  className="btn btn-outline-danger btn-icon"
+                  className="btn btn-secondary btn-icon"
                   onClick={() => removeItem(idx)}
                   disabled={items.length === 1}
                   aria-label="Remove item"
@@ -545,7 +559,7 @@ export default function FinanceStructures() {
                 </button>
               </div>
             ))}
-            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={addItem}>
+            <button type="button" className="btn btn-soft btn-sm" onClick={addItem}>
               <i className="bi bi-plus-lg"></i> Add Item
             </button>
 
@@ -555,75 +569,78 @@ export default function FinanceStructures() {
                 <div className="total-bar__value">KES {currency(total)}</div>
               </div>
               <button className="btn btn-primary" disabled={saving || isDuplicate}>
+                <i className="bi bi-check2-circle"></i>
                 {saving ? "Saving..." : "Create Fee Structure"}
               </button>
             </div>
           </form>
         </div>
-      </div>
+      </section>
 
       {/* Filters */}
-      <div className="toolbar">
-        <span className="section-label me-1">
-          <i className="bi bi-funnel me-1"></i>Filter
-        </span>
-        <select
-          className="form-select w-auto"
-          aria-label="Academic year"
-          value={filters.term__academic_year}
-          onChange={(e) => setFilters({ ...filters, term__academic_year: e.target.value })}
-        >
-          <option value="">All years</option>
-          {academicYears.map((y) => (
-            <option key={y.id} value={y.id}>
-              {y.year}
-            </option>
-          ))}
-        </select>
-        <select
-          className="form-select w-auto"
-          aria-label="Grade"
-          value={filters.grade_level}
-          onChange={(e) => setFilters({ ...filters, grade_level: e.target.value })}
-        >
-          <option value="">All grades</option>
-          {gradeLevels.map((g) => (
-            <option key={g.id} value={g.id}>
-              {g.name}
-            </option>
-          ))}
-        </select>
-        {hasActiveFilters && (
-          <button className="btn btn-sm btn-light" type="button" onClick={clearFilters}>
-            <i className="bi bi-x-lg"></i> Clear
-          </button>
-        )}
-      </div>
-
-      {hasActiveFilters && (
-        <div className="d-flex flex-wrap gap-1 mb-3">
-          {filters.term__academic_year && (
-            <span className="filter-chip">
-              Year: {academicYears.find((y) => String(y.id) === String(filters.term__academic_year))?.year}
-              <button onClick={() => setFilters({ ...filters, term__academic_year: "" })}>
-                <i className="bi bi-x"></i>
-              </button>
-            </span>
-          )}
-          {filters.grade_level && (
-            <span className="filter-chip">
-              Grade: {gradeLevels.find((g) => String(g.id) === String(filters.grade_level))?.name}
-              <button onClick={() => setFilters({ ...filters, grade_level: "" })}>
-                <i className="bi bi-x"></i>
-              </button>
-            </span>
+      <section className="page-card">
+        <div className="search-bar">
+          <span className="section-label">
+            <i className="bi bi-funnel me-1"></i>Filter
+          </span>
+          <select
+            className="form-select"
+            aria-label="Academic year"
+            value={filters.term__academic_year}
+            onChange={(e) => setFilters({ ...filters, term__academic_year: e.target.value })}
+          >
+            <option value="">All years</option>
+            {academicYears.map((y) => (
+              <option key={y.id} value={y.id}>
+                {y.year}
+              </option>
+            ))}
+          </select>
+          <select
+            className="form-select"
+            aria-label="Grade"
+            value={filters.grade_level}
+            onChange={(e) => setFilters({ ...filters, grade_level: e.target.value })}
+          >
+            <option value="">All grades</option>
+            {gradeLevels.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </select>
+          {hasActiveFilters && (
+            <button className="btn btn-secondary" type="button" onClick={clearFilters}>
+              <i className="bi bi-x-lg"></i> Clear
+            </button>
           )}
         </div>
-      )}
+
+        {hasActiveFilters && (
+          <div className="chip-row" style={{ borderBottom: "none" }}>
+            {filters.term__academic_year && (
+              <span className="filter-chip">
+                Year: {academicYears.find((y) => String(y.id) === String(filters.term__academic_year))?.year}
+                <button onClick={() => setFilters({ ...filters, term__academic_year: "" })}>
+                  <i className="bi bi-x"></i>
+                </button>
+              </span>
+            )}
+            {filters.grade_level && (
+              <span className="filter-chip">
+                Grade: {gradeLevels.find((g) => String(g.id) === String(filters.grade_level))?.name}
+                <button onClick={() => setFilters({ ...filters, grade_level: "" })}>
+                  <i className="bi bi-x"></i>
+                </button>
+              </span>
+            )}
+          </div>
+        )}
+      </section>
 
       {/* Fee Structures Cards Grid */}
       {loading ? (
-        <div className="row g-3">
+        <div className="row g-3 mt-1">
           {[1, 2, 3].map((i) => (
             <div className="col-12 col-md-6 col-lg-4" key={i}>
               <div className="card">
@@ -638,7 +655,7 @@ export default function FinanceStructures() {
           ))}
         </div>
       ) : structures.length === 0 ? (
-        <div className="card">
+        <div className="page-card">
           <div className="empty-state">
             <i className="bi bi-cash-stack"></i>
             <h6>No fee structures found</h6>
@@ -650,7 +667,7 @@ export default function FinanceStructures() {
           </div>
         </div>
       ) : (
-        <div className="row g-3">
+        <div className="row g-3 mt-1">
           {structures.map((f) => {
             const isEditing = editingId === f.id;
             return (
@@ -659,8 +676,8 @@ export default function FinanceStructures() {
                   <div className="card-body">
                     <div className="fee-card__head">
                       <h6 className="fee-card__title">{f.grade_level_name}</h6>
-                      <span className="badge badge-blue">
-                        <i className="bi bi-clock me-1"></i>
+                      <span className="chip">
+                        <i className="bi bi-clock"></i>
                         {f.term_label}
                       </span>
                     </div>
@@ -700,7 +717,7 @@ export default function FinanceStructures() {
                             />
                             <button
                               type="button"
-                              className="btn btn-outline-danger btn-sm btn-icon"
+                              className="btn btn-secondary btn-sm btn-icon"
                               onClick={() => removeEditItem(idx)}
                               disabled={editItems.length === 1}
                               aria-label="Remove item"
@@ -710,7 +727,7 @@ export default function FinanceStructures() {
                             </button>
                           </div>
                         ))}
-                        <button type="button" className="btn btn-outline-secondary btn-sm" onClick={addEditItem}>
+                        <button type="button" className="btn btn-soft btn-sm" onClick={addEditItem}>
                           <i className="bi bi-plus-lg"></i> Add Item
                         </button>
                         <div className="fee-total mt-3">

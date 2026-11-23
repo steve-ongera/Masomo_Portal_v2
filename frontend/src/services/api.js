@@ -486,12 +486,13 @@ export const hrApi = {
   departments: hrCrud("departments"),
   positions: hrCrud("positions"),
   leaveTypes: hrCrud("leave-types"),
-  employees: {
+    employees: {
     ...hrCrud("employees"),
     createLogin: (id) => api.post(`/hr/employees/${id}/create_login/`),
     exit: (id, payload) => api.post(`/hr/employees/${id}/exit/`, payload),
     availableUsers: () => api.get("/hr/employees/available_users/"),
     unlinkUser: (id) => api.post(`/hr/employees/${id}/unlink_user/`),
+    view360: (id, section, params) => api.get(`/hr/employees/${id}/360/${section}/`, { params }),   // NEW
   },
   leave: {
     ...hrCrud("leave"),
@@ -503,6 +504,14 @@ export const hrApi = {
     bulk: (date, rows) => api.post("/hr/attendance/bulk/", { date, rows }),
   },
 };
+
+
+export const myLeaveApi = {
+  overview: () => api.get("/hr/my-leave/"),
+  request: (payload) => api.post("/hr/my-leave/", payload),
+  cancel: (id) => api.post(`/hr/my-leave/${id}/cancel/`),
+};
+
 
 const hrList = (r) => r.data.results ?? r.data;
 export { hrList };

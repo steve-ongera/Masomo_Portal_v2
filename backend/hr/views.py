@@ -1,8 +1,10 @@
 import csv
+from collections import Counter
 from datetime import date, timedelta
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_date
 
 from rest_framework import status as http
 
@@ -89,6 +91,17 @@ class EmployeeViewSet(HRBase):
             return Response({"detail": "A reason is required."}, status=400)
         emp = services.exit_employee(self.get_object(), reason, request.data.get("exit_date"))
         return Response(s.EmployeeSerializer(emp).data)
+
+    @action(detail=True, methods=["get"], url_path=r"360/(?P<section>[a-z]+)")
+    def view360(self, request, pk=None, section=None):
+        """
+        GET /hr/employees/<id>/360/<section>/
+        sections: overview | attendance | payroll | leave | teaching | account
+        """
+        fn = EMPLOYEE_360_SECTIONS.get(section)
+        if fn is None:
+            return Response({"detail": "Unknown section."}, status=404)
+        return Response(fn(self.get_object(), request))
 
 
 class LeaveRequestViewSet(HRBase):
@@ -455,3 +468,166 @@ def report(request, name):
             w.writerows(rows)
         return r
     return Response(rows)
+
+
+# ======================= EMPLOYEE 360 =======================
+def _user_block(u):
+    if not u:
+        return None
+    return {
+        "id": str(u.id), "username": u.username,
+        "full_name": u.get_full_name() or u.username,
+        "role": u.role, "role_display": u.get_role_display(),
+        "email": u.email, "phone_number": u.phone_number,
+        "can_log_in": bool(u.is_active and u.is_active_staff),
+        "locked": bool(getattr(u, "is_locked", False)),
+        "last_login": u.last_login, "date_joined": u.date_joined,
+    }
+
+
+def _is_teacher(emp):
+    return emp.category == m.Employee.Category.TEACHER or bool(emp.user_id and emp.user.role == "TEACHER")
+
+
+def _e360_overview(emp, request):
+    today = timezone.localdate()
+    month = emp.attendance.filter(date__year=today.year, date__month=today.month)
+    latest = (emp.payslips.select_related("run").filter(run__status__in=["APPROVED", "PAID"])
+              .order_by("-run__year", "-run__month").first())
+    return {
+        "profile": s.EmployeeProfileSerializer(emp).data,
+        "is_teacher": _is_teacher(emp),
+        "linked_user": _user_block(emp.user) if emp.user_id else None,
+        "stats": {
+            "attendance_this_month": dict(month.values_list("status").annotate(n=Count("id"))),
+            "pending_leave": emp.leave_requests.filter(status="PENDING").count(),
+            "latest_payslip": s.PayslipRowSerializer(latest).data if latest else None,
+        },
+    }
+
+
+def _e360_attendance(emp, request):
+    p = request.query_params
+    today = timezone.localdate()
+    d_from = parse_date(p.get("from") or "") or today - timedelta(days=90)
+    d_to = parse_date(p.get("to") or "") or today
+
+    qs = emp.attendance.filter(date__range=(d_from, d_to)).order_by("-date")
+    counts = dict(qs.values_list("status").annotate(n=Count("id")))
+    S_ = m.StaffAttendance.Status
+    attended = sum(counts.get(k, 0) for k in (S_.PRESENT, S_.LATE, S_.EARLY_DEPARTURE))
+    working = attended + counts.get(S_.ABSENT, 0)
+
+    device = getattr(emp, "device", None)
+    return {
+        "from": d_from, "to": d_to, "summary": counts,
+        "attendance_rate": round(attended / working * 100, 1) if working else None,
+        "rows": s.AttendanceRowSerializer(qs[:400], many=True).data,
+        "device": {"bound_at": device.bound_at} if device else None,
+        "recent_scans": s.ScanRowSerializer(emp.scans.all()[:15], many=True).data,
+    }
+
+
+def _e360_payroll(emp, request):
+    year = request.query_params.get("year")
+    slips = emp.payslips.select_related("run").order_by("-run__year", "-run__month")
+    if year and year.isdigit():
+        slips = slips.filter(run__year=int(year))
+    released = slips.filter(run__status__in=["APPROVED", "PAID"])
+    totals = released.aggregate(gross=Sum("gross"), paye=Sum("paye"), nssf=Sum("nssf"), shif=Sum("shif"),
+                                housing_levy=Sum("housing_levy"), net=Sum("net"))
+    salary = getattr(emp, "salary", None)
+    return {
+        "salary": s.SalarySerializer(salary).data if salary else None,
+        "deductions": s.DeductionRowSerializer(emp.deductions.all(), many=True).data,
+        "totals": {k: (v or 0) for k, v in totals.items()},
+        "payslip_count": released.count(),
+        "years": sorted({sl.run.year for sl in emp.payslips.select_related("run")}, reverse=True),
+        "payslips": s.PayslipRowSerializer(slips[:36], many=True).data,
+    }
+
+
+def _e360_leave(emp, request):
+    y = request.query_params.get("year")
+    year = int(y) if y and y.isdigit() else timezone.localdate().year
+    balances = []
+    for lt in m.LeaveType.objects.all():
+        remaining = services.leave_balance(emp, lt, year)
+        balances.append({"leave_type": lt.id, "name": lt.name, "is_paid": lt.is_paid,
+                         "entitled": lt.days_per_year, "used": lt.days_per_year - remaining, "remaining": remaining})
+    reqs = emp.leave_requests.select_related("leave_type", "reviewed_by").order_by("-created_at")
+    return {
+        "year": year, "balances": balances,
+        "counts": dict(Counter(reqs.values_list("status", flat=True))),
+        "requests": s.LeaveRowSerializer(reqs[:100], many=True).data,
+    }
+
+
+def _e360_teaching(emp, request):
+    if not emp.user_id:
+        return {"linked": False, "detail": "Link a user account to this employee to see teaching data."}
+    try:
+        from api import models as a   # lazy import: HR stays standalone
+    except ImportError:
+        return {"linked": False, "detail": "Teaching data is not available."}
+
+    user = emp.user
+    years = list(a.AcademicYear.objects.order_by("-year"))
+    alloc_counts = dict(
+        a.TeacherSubjectAllocation.objects.filter(teacher=user).values_list("academic_year_id").annotate(c=Count("id"))
+    )
+    ct_year_ids = set(a.ClassRoom.objects.filter(class_teacher=user).values_list("academic_year_id", flat=True))
+
+    wanted = request.query_params.get("academic_year")
+    selected = (next((y for y in years if str(y.id) == str(wanted)), None)
+                or next((y for y in years if y.is_current), None) or (years[0] if years else None))
+
+    allocations = []
+    if selected:
+        qs = (a.TeacherSubjectAllocation.objects.filter(teacher=user, academic_year=selected)
+              .select_related("subject", "classroom__grade_level", "classroom__stream")
+              .order_by("classroom__grade_level__level_order", "classroom__stream__name", "subject__name"))
+        allocations = [{
+            "id": x.id, "subject": x.subject.name, "subject_code": x.subject.code,
+            "classroom": str(x.classroom), "grade_level": x.classroom.grade_level.name,
+            "periods_per_week": x.periods_per_week, "double_lesson": x.double_lesson,
+        } for x in qs]
+
+    rooms = (a.ClassRoom.objects.filter(class_teacher=user)
+             .select_related("grade_level", "stream", "academic_year")
+             .annotate(student_count=Count("enrollments", filter=Q(enrollments__status="ACTIVE")))
+             .order_by("-academic_year__year", "grade_level__level_order"))
+    history = [{
+        "id": r.id, "classroom": f"{r.grade_level.name} {r.stream.name}",
+        "academic_year": r.academic_year.year, "is_current_year": r.academic_year.is_current,
+        "students": r.student_count,
+    } for r in rooms]
+
+    return {
+        "linked": True,
+        "selected_academic_year": selected.id if selected else None,
+        "academic_years": [{
+            "id": y.id, "year": y.year, "is_current": y.is_current,
+            "allocations": alloc_counts.get(y.id, 0), "class_teacher": y.id in ct_year_ids,
+        } for y in years],
+        "allocations": allocations,
+        "total_periods_per_week": sum(x["periods_per_week"] for x in allocations),
+        "is_class_teacher_now": any(h["is_current_year"] for h in history),
+        "ever_class_teacher": bool(history),
+        "class_teacher_history": history,
+    }
+
+
+def _e360_account(emp, request):
+    return {
+        "linked": emp.user_id is not None,
+        "user": _user_block(emp.user) if emp.user_id else None,
+        "can_create_login": (emp.user_id is None and emp.status != "EXITED"
+                             and emp.category in services.ACCOUNT_ROLE),
+    }
+
+
+EMPLOYEE_360_SECTIONS = {
+    "overview": _e360_overview, "attendance": _e360_attendance, "payroll": _e360_payroll,
+    "leave": _e360_leave, "teaching": _e360_teaching, "account": _e360_account,
+}

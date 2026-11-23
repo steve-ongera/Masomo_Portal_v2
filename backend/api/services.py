@@ -25,7 +25,6 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from . import models, serializers, stages, utils
 from django.db.models.functions import Length
-from django.db.models import Avg, Count, F, Q, Sum
 
 _signer = TimestampSigner(salt="2fa-login-challenge")
 
@@ -514,11 +513,15 @@ def grade_for_percentage(
 REPORT_CARD_TOKEN_SALT = "report-card-verify-v1"
 
 
-def generate_report_card_token(enrollment_id: int, term_id: int, exam_id: int = None) -> str:
-    return signing.dumps(
-        {"enrollment_id": enrollment_id, "term_id": term_id, "exam_id": exam_id},
-        salt=REPORT_CARD_TOKEN_SALT,
-    )
+def generate_report_card_token(
+    enrollment_id: int, term_id: int, exam_id: int = None,
+    pos_term_id: int = None, pos_exam_type_id: int = None,
+) -> str:
+    data = {"enrollment_id": enrollment_id, "term_id": term_id, "exam_id": exam_id}
+    if pos_term_id:
+        data["pos_term_id"] = pos_term_id
+        data["pos_exam_type_id"] = pos_exam_type_id
+    return signing.dumps(data, salt=REPORT_CARD_TOKEN_SALT)
 
 
 def read_report_card_token(token: str):
@@ -549,6 +552,9 @@ def get_report_card_verification(token: str) -> dict:
         exactly (total marks, average, points, grade, class/grade position).
       - token has no exam_id      -> the combined-term view (every exam in
         the term), with the END-OF-TERM ranking position as before.
+
+    If the token also carries pos_term_id, the positions are taken from that
+    term / exam type instead, matching what was printed on the report card.
     """
     payload = read_report_card_token(token)
     if not payload:
@@ -581,6 +587,28 @@ def get_report_card_verification(token: str) -> dict:
         "exam": exam.name if exam else "All Exams (Combined)",
     }
 
+    ref_block = {}
+    if payload.get("pos_term_id"):
+        ref_term = models.Term.objects.select_related("academic_year").filter(
+            pk=payload["pos_term_id"]
+        ).first()
+        if ref_term:
+            ref_exam_type = (
+                models.ExamType.objects.filter(pk=payload["pos_exam_type_id"]).first()
+                if payload.get("pos_exam_type_id") else None
+            )
+            ref = get_reference_positions(
+                ref_term, ref_exam_type, [enrollment.student_id], force_ranking=True
+            ).get(enrollment.student_id)
+            if ref:
+                ref_block = {
+                    "position_basis": reference_basis_label(ref_term, ref_exam_type),
+                    "class_position": ref["class_position"],
+                    "class_size": ref["class_size"],
+                    "grade_position": ref["overall_position"],
+                    "grade_size": ref["overall_size"],
+                }
+
     # ---------------------------------------------------------------
     # Exam-specific report card: same numbers the student's PDF shows
     # ---------------------------------------------------------------
@@ -598,6 +626,7 @@ def get_report_card_verification(token: str) -> dict:
             "class_size": summary["class_size"],
             "grade_position": summary["grade_position"],
             "grade_size": summary["grade_size"],
+            **ref_block,
         }
 
     # ---------------------------------------------------------------
@@ -652,6 +681,7 @@ def get_report_card_verification(token: str) -> dict:
         "class_size": None,
         "grade_position": ranking.grade_position if ranking else None,
         "grade_size": None,
+        **ref_block,
     }
 
 
@@ -852,6 +882,90 @@ def get_student_exam_summary(enrollment: models.Enrollment, exam: models.Exam) -
         "grade_position": grade_ranks.get(enrollment.id) if ranked else None,
         "grade_size": len(grade_ranks),
     }
+
+
+# ---------------------------------------------------------------------------
+# POSITIONS FROM ANOTHER TERM / EXAM TYPE (report card "position basis")
+# ---------------------------------------------------------------------------
+def reference_basis_label(term, exam_type=None) -> str:
+    """e.g. 'Term 3 2026 End Term' or 'Term 3 2026 All Exams'."""
+    return (
+        f"{term.get_term_number_display()} {term.academic_year.year} "
+        f"{exam_type.name if exam_type else 'All Exams'}"
+    )
+
+
+def get_reference_positions(term, exam_type, student_ids, force_ranking=False) -> dict:
+    """
+    Positions for the given students based on ONE term (any academic year) and
+    optionally ONE exam type (None = every exam in that term combined).
+
+    Each student is ranked in the classroom and grade they were in during that
+    term's academic year. Returns {student_id: {classroom, average,
+    class_position, class_size, overall_position, overall_size}}.
+    Students with no enrollment in that year are absent from the result.
+    Positions are None when there are no marks in scope, or the grade has no
+    ranking (PP1 - Grade 3) - unless force_ranking=True, which is used when the
+    user explicitly chose a position basis and wants positions shown anyway.
+    """
+    enrollments = list(
+        models.Enrollment.objects.filter(
+            academic_year=term.academic_year, status__in=RANKABLE_ENROLLMENT_STATUSES
+        ).select_related("classroom__grade_level", "classroom__stream", "classroom__academic_year")
+    )
+    by_id = {e.id: e for e in enrollments}
+
+    class_sizes, grade_sizes = defaultdict(int), defaultdict(int)
+    for e in enrollments:
+        class_sizes[e.classroom_id] += 1
+        grade_sizes[e.classroom.grade_level_id] += 1
+
+    results = models.ExamResult.objects.filter(
+        exam__term=term, enrollment_id__in=list(by_id),
+        is_absent=False, marks_obtained__isnull=False, max_marks__gt=0,
+    )
+    if exam_type:
+        results = results.filter(exam__exam_type=exam_type)
+
+    per_subject = defaultdict(lambda: defaultdict(list))
+    for enr_id, subject_id, marks, max_m in results.values_list(
+        "enrollment_id", "subject_id", "marks_obtained", "max_marks"
+    ):
+        per_subject[enr_id][subject_id].append(float(marks) / float(max_m) * 100)
+
+    averages = {}
+    for enr_id, subjects in per_subject.items():
+        subject_avgs = [round(sum(v) / len(v), 1) for v in subjects.values()]
+        averages[enr_id] = round(sum(subject_avgs) / len(subject_avgs), 1)
+
+    by_class, by_grade = defaultdict(dict), defaultdict(dict)
+    for enr_id, avg in averages.items():
+        e = by_id[enr_id]
+        by_class[e.classroom_id][enr_id] = avg
+        by_grade[e.classroom.grade_level_id][enr_id] = avg
+    class_ranks = {cid: _competition_ranks(d) for cid, d in by_class.items()}
+    grade_ranks = {gid: _competition_ranks(d) for gid, d in by_grade.items()}
+
+    wanted = set(student_ids)
+    out = {}
+    for e in enrollments:
+        if e.student_id not in wanted:
+            continue
+        avg = averages.get(e.id)
+        # force_ranking: the user explicitly asked for positions from this
+        # term/exam, so show them even for stages with no ranking (PP1-Grade 3).
+        ranked = avg is not None and (
+            force_ranking or stages.ranking_enabled(e.classroom.grade_level)
+        )
+        out[e.student_id] = {
+            "classroom": str(e.classroom),
+            "average": avg,
+            "class_position": class_ranks.get(e.classroom_id, {}).get(e.id) if ranked else None,
+            "class_size": class_sizes[e.classroom_id],
+            "overall_position": grade_ranks.get(e.classroom.grade_level_id, {}).get(e.id) if ranked else None,
+            "overall_size": grade_sizes[e.classroom.grade_level_id],
+        }
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2171,12 +2285,18 @@ def get_admin_exam_spreadsheet(classroom: models.ClassRoom, exam: models.Exam) -
         })
 
     enrollments = (
-        classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE)
+        classroom.enrollments.filter(status__in=RANKABLE_ENROLLMENT_STATUSES)
         .select_related("student__user")
-        .order_by("student__user__first_name")
+        .order_by("student__user__first_name", "student__user__last_name")
     )
     students = [
-        {"enrollment_id": e.id, "admission_no": e.student.admission_no, "full_name": e.student.user.get_full_name()}
+        {
+            "enrollment_id": e.id,
+            "admission_no": e.student.admission_no,
+            "full_name": e.student.user.get_full_name(),
+            "enrollment_status": e.status,
+            "enrollment_status_display": e.get_status_display(),
+        }
         for e in enrollments
     ]
 
@@ -2194,6 +2314,12 @@ def get_admin_exam_spreadsheet(classroom: models.ClassRoom, exam: models.Exam) -
     return {
         "classroom": str(classroom),
         "exam": str(exam),
+        "is_promoted": hasattr(classroom, "promotion_record"),
+        "promoted_to_label": (
+            (str(classroom.promotion_record.target_classroom)
+             if classroom.promotion_record.target_classroom else "Graduated")
+            if hasattr(classroom, "promotion_record") else None
+        ),
         "subjects": subject_payload,
         "students": students,
         "marks": marks,
@@ -2733,20 +2859,17 @@ def record_finance_payment(student, amount, method, reference, recorded_by):
     return payments
 
 
-
-
-
 # ===========================================================================
-# BLOCK A - custom scheme resolution
+# CUSTOM GRADING SCHEME RESOLUTION
 # ===========================================================================
 _GRADING_CACHE = {}
 _GRADING_CACHE_TTL = 30  # seconds; also cleared immediately on publish (same process)
- 
- 
+
+
 def clear_grading_cache():
     _GRADING_CACHE.clear()
- 
- 
+
+
 def _cached(key, loader):
     hit = _GRADING_CACHE.get(key)
     now = time.monotonic()
@@ -2755,8 +2878,8 @@ def _cached(key, loader):
     value = loader()
     _GRADING_CACHE[key] = (now, value)
     return value
- 
- 
+
+
 def find_grading_scheme(curriculum_type, grade_level, subject, term):
     """
     Most specific PUBLISHED scheme in force for `term`, as (scheme, bands) or None.
@@ -2764,7 +2887,7 @@ def find_grading_scheme(curriculum_type, grade_level, subject, term):
     effective term wins, then the highest version.
     Specificity: class+subject > class > subject > curriculum default.
     """
- 
+
     def load():
         scopes = []
         if grade_level and subject:
@@ -2774,7 +2897,7 @@ def find_grading_scheme(curriculum_type, grade_level, subject, term):
         if subject:
             scopes.append({"grade_level__isnull": True, "subject": subject})
         scopes.append({"grade_level__isnull": True, "subject__isnull": True})
- 
+
         for scope in scopes:
             scheme = (
                 models.GradingScheme.objects.filter(
@@ -2789,14 +2912,14 @@ def find_grading_scheme(curriculum_type, grade_level, subject, term):
             if scheme:
                 return scheme, list(scheme.bands.order_by("-min_percentage"))
         return None
- 
+
     key = (
         "scheme", curriculum_type,
         grade_level.id if grade_level else None, subject.id if subject else None, term.id,
     )
     return _cached(key, load)
- 
- 
+
+
 def grade_from_custom_scheme(curriculum_type, percentage, subject=None, grade_level=None, term=None):
     """GradeResult from an Exam-Officer scheme, or None if none applies (-> legacy behaviour)."""
     term = term or _cached(("current_term",), lambda: models.Term.objects.filter(is_current=True).first())
@@ -2811,11 +2934,9 @@ def grade_from_custom_scheme(curriculum_type, percentage, subject=None, grade_le
         if pct >= band.min_percentage:
             return GradeResult(band.grade_letter, band.points, band.remark)
     return None
- 
- 
-# ===========================================================================
-# BLOCK B - replacement grade_for_percentage (only the signature + first 3 lines are new)
-# ===========================================================================
+
+
+# Replaces the earlier grade_for_percentage above (same name, defined later so this one wins).
 def grade_for_percentage(
     curriculum_type: str,
     percentage: Decimal,
@@ -2825,21 +2946,21 @@ def grade_for_percentage(
 ):
     """
     Order of precedence:
-      1. Exam Officer GradingScheme in force for `term` (new)
-      2. stage rubric for PP1-Grade 3            (unchanged)
-      3. school's legacy GradingScale            (unchanged)
-      4. stage rubric fallback / KCSE-style scale (unchanged)
+      1. Exam Officer GradingScheme in force for `term`
+      2. stage rubric for PP1-Grade 3
+      3. school's legacy GradingScale
+      4. stage rubric fallback / KCSE-style scale
     `term` = the term of the exam being graded. Omit it only for "right now" views.
     """
     custom = grade_from_custom_scheme(curriculum_type, percentage, subject, grade_level, term)
     if custom:
         return custom
- 
+
     stage = stages.stage_for_grade(grade_level)
- 
+
     if stage in stages.CODE_SCALE_STAGES:
         return stages.rubric_grade(stage, percentage)
- 
+
     qs = models.GradingScale.objects.filter(
         curriculum_type=curriculum_type,
         min_percentage__lte=percentage,
@@ -2849,40 +2970,55 @@ def grade_for_percentage(
     scale = specific or qs.filter(subject__isnull=True).first()
     if scale:
         return scale
- 
+
     if stage in stages.RUBRIC_FALLBACK_STAGES:
         return stages.rubric_grade(stage, percentage)
     return default_grade_for_percentage(percentage)
- 
- 
+
+
 # ===========================================================================
-# BLOCK C - AUTOMATIC PROMOTION
+# AUTOMATIC PROMOTION
 # ===========================================================================
-def _latest_ended_academic_year(cfg):
-    """Newest academic year whose final term has ended (+ the configured delay)."""
+def _latest_ended_academic_year(cfg, ignore_dates=False):
+    """
+    The year whose classes should be promoted. A year qualifies if:
+      - its last term has ended (+ grace days), OR
+      - a LATER academic year is already current / has started, OR
+      - ignore_dates=True (manual Preview / Promote Now) and next year exists.
+    """
     today = timezone.localdate()
-    for year in models.AcademicYear.objects.order_by("-year"):
+    years = list(models.AcademicYear.objects.order_by("-year"))
+    year_values = {y.year for y in years}
+
+    for year in years:
         final = models.Term.objects.filter(academic_year=year).order_by("-term_number").first()
-        if final and final.end_date + timedelta(days=cfg.days_after_year_end) < today:
+        if not final:
+            continue
+        ended = final.end_date + timedelta(days=cfg.days_after_year_end) < today
+        successor_started = any(
+            y.year > year.year and (y.is_current or y.start_date <= today) for y in years
+        )
+        has_successor = (year.year + 1) in year_values
+        if ended or successor_started or (ignore_dates and has_successor):
             return year, final
     return None, None
- 
- 
+
+
 def _promotion_decision(enrollment, cfg, final_term):
     """-> ("PROMOTE" | "REPEAT" | "HOLD", reason)"""
     if enrollment.student.enrollments.filter(
         academic_year__year=enrollment.academic_year.year + 1
     ).exists():
         return "HOLD", "Already enrolled for next year"
- 
+
     if cfg.mode == models.PromotionSettings.Mode.PROMOTE_ALL:
         return "PROMOTE", ""
- 
+
     grade = enrollment.classroom.grade_level
     rule = getattr(grade, "promotion_rule", None)
     if not rule or not stages.ranking_enabled(grade):
         return "PROMOTE", ""            # nothing to measure against (same as manual promote)
- 
+
     ranking = models.TermPositionRanking.objects.filter(
         enrollment=enrollment, term=final_term, checkpoint="ENDTERM"
     ).first()
@@ -2893,38 +3029,47 @@ def _promotion_decision(enrollment, cfg, final_term):
             f"Average {ranking.average_marks}% is below the required {rule.minimum_average_percentage}%"
         )
     return "PROMOTE", ""
- 
- 
+
+
 def _auto_promote_classroom(classroom, cfg, final_term):
     Status = models.Enrollment.Status
     active = list(
         classroom.enrollments.filter(status=Status.ACTIVE).select_related("student__user", "classroom__grade_level")
     )
-    out = {"classroom": str(classroom), "promoted": 0, "graduated": 0, "repeating": [], "held": [], "target": None}
- 
+    out = {
+        "classroom": str(classroom),
+        "students": len(active),
+        "from_year": classroom.academic_year.year,
+        "promoted": 0, "graduated": 0,
+        "repeating": [], "held": [],
+        "target": None, "target_year": None,
+    }
+
     info = resolve_next_classroom_target(classroom)       # ValueError if next year isn't set up yet
- 
+
     if info["graduating"]:
+        out["target"] = "Graduation"
         models.Enrollment.objects.filter(pk__in=[e.pk for e in active]).update(status=Status.GRADUATED)
         out["graduated"] = len(active)
         models.ClassroomPromotion.objects.create(
             source_classroom=classroom, target_classroom=None, promoted_by=None, student_count=len(active)
         )
         return out
- 
+
     if cfg.mode == models.PromotionSettings.Mode.RULE_BASED:
         rank_classroom(final_term, classroom, "ENDTERM")   # make sure positions/averages are fresh
- 
+
     target = get_or_create_next_classroom(classroom)
     out["target"] = str(target)
+    out["target_year"] = target.academic_year.year
     repeat_room = None
- 
+
     for enrollment in active:
         decision, reason = _promotion_decision(enrollment, cfg, final_term)
         who = {"admission_no": enrollment.student.admission_no,
                "name": enrollment.student.user.get_full_name(), "reason": reason}
         if decision == "PROMOTE":
-            promote_student(enrollment, target, force=True)   # decision already made above
+            promote_student(enrollment, target, force=True)
             out["promoted"] += 1
         elif decision == "REPEAT":
             if repeat_room is None:
@@ -2941,13 +3086,13 @@ def _auto_promote_classroom(classroom, cfg, final_term):
             out["repeating"].append(who)
         else:
             out["held"].append(who)        # stays ACTIVE - handle by hand via Promote (force)
- 
+
     models.ClassroomPromotion.objects.create(
         source_classroom=classroom, target_classroom=target, promoted_by=None, student_count=out["promoted"]
     )
     return out
- 
- 
+
+
 def sync_academic_calendar():
     """Optional: flip the current year/term once the new one has started and the old year is promoted."""
     today = timezone.localdate()
@@ -2968,26 +3113,44 @@ def sync_academic_calendar():
         term.is_current = True
         term.save()
     return f"Current year {year.year}" + (f", {term}" if term else "")
- 
- 
-def run_auto_promotion(dry_run=False, scheduled=False, triggered_by=None):
+
+
+def run_auto_promotion(dry_run=False, scheduled=False, triggered_by=None, ignore_dates=None):
     """
-    Promotes (or graduates) every class of the most recent FINISHED academic year
-    that has no ClassroomPromotion record yet.
-      - scheduled=True  : obeys the on/off switch (used by the daily job)
-      - dry_run=True    : does everything, then rolls it back, and reports what WOULD happen
-    Idempotent: the ClassroomPromotion row is the "already done" guard, so
-    running it every day is safe. Only ONE year (the latest finished) is ever
-    touched, so old unpromoted history is never promoted by surprise.
+    scheduled=True  : obeys the on/off switch and the date rules (daily job).
+    Manual runs (Preview / Promote Now) ignore the end-of-year date gate by default.
     """
+    if ignore_dates is None:
+        ignore_dates = not scheduled
+
     cfg = models.PromotionSettings.load()
     if scheduled and not cfg.auto_promote_enabled:
         return {"ran": False, "detail": "Automatic promotion is switched off."}
- 
-    year, final_term = _latest_ended_academic_year(cfg)
+
+    year, final_term = _latest_ended_academic_year(cfg, ignore_dates=ignore_dates)
     if not year:
-        return {"ran": False, "detail": "No academic year has finished yet."}
- 
+        return {
+            "ran": False,
+            "detail": "Nothing to promote: no academic year has finished (or has a following "
+                      "academic year set up). Check Academic Calendar.",
+        }
+
+    # ---- classes of this year that are ALREADY promoted ----
+    already_promoted = [
+        {
+            "classroom": str(p.source_classroom),
+            "target": str(p.target_classroom) if p.target_classroom else "Graduated",
+            "students": p.student_count,
+            "promoted_at": p.promoted_at.isoformat(),
+            "promoted_by": p.promoted_by.get_full_name() if p.promoted_by else "Automatic",
+        }
+        for p in models.ClassroomPromotion.objects
+        .filter(source_classroom__academic_year=year)
+        .select_related("source_classroom__grade_level", "source_classroom__stream",
+                        "target_classroom", "promoted_by")
+        .order_by("source_classroom__grade_level__level_order", "source_classroom__stream__name")
+    ]
+
     classrooms = (
         models.ClassRoom.objects.filter(academic_year=year, promotion_record__isnull=True)
         .select_related("grade_level", "stream")
@@ -3004,7 +3167,7 @@ def run_auto_promotion(dry_run=False, scheduled=False, triggered_by=None):
                     transaction.set_rollback(True)
         except ValueError as exc:
             errors.append({"classroom": str(classroom), "reason": str(exc)})
- 
+
     summary = {
         "ran": True, "dry_run": dry_run, "academic_year": year.year,
         "classes_processed": len(results),
@@ -3013,20 +3176,23 @@ def run_auto_promotion(dry_run=False, scheduled=False, triggered_by=None):
         "repeating": sum(len(r["repeating"]) for r in results),
         "held": sum(len(r["held"]) for r in results),
         "classes": results, "errors": errors,
+        "already_promoted": already_promoted,
     }
- 
+
     if not dry_run:
         if cfg.auto_activate_next_year:
             summary["calendar"] = sync_academic_calendar()
         cfg.last_run_at = timezone.now()
-        cfg.last_run_summary = {k: v for k, v in summary.items() if k != "classes"}
+        cfg.last_run_summary = {
+            k: v for k, v in summary.items() if k not in ("classes", "already_promoted")
+        }
         if triggered_by:
             cfg.updated_by = triggered_by
         cfg.save()
     return summary
- 
- 
- # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # BULK EXAM CREATION
 # ---------------------------------------------------------------------------
 def bulk_create_exams(term, exam_type, grade_levels, start_date, end_date,
@@ -3062,7 +3228,9 @@ def bulk_create_exams(term, exam_type, grade_levels, start_date, end_date,
     return {"created": created, "skipped": skipped}
 
 
-
+# ---------------------------------------------------------------------------
+# RECEIPT LOOKUP / CORRECTION / SPLIT PAYMENTS / ALUMNI BALANCES
+# ---------------------------------------------------------------------------
 def get_receipt_payments(receipt_no):
     """All Payment rows under one receipt number, oldest term first."""
     receipt_no = (receipt_no or "").strip().upper()
@@ -3081,8 +3249,8 @@ def get_receipt_payments(receipt_no):
             "id",
         )
     )
- 
- 
+
+
 def receipt_snapshot(payments):
     first = payments[0]
     student = first.invoice.enrollment.student
@@ -3099,15 +3267,15 @@ def receipt_snapshot(payments):
             {"term": str(p.invoice.fee_structure.term), "amount": str(p.amount)} for p in payments
         ],
     }
- 
- 
+
+
 def _allocate_payment(student, amount, method, reference, recorded_by, receipt_no, paid_at=None):
     """Oldest-invoice-first allocation under ONE receipt number; any excess becomes credit."""
     remaining = Decimal(str(amount))
     if remaining <= 0:
         raise ValueError("Payment amount must be greater than zero.")
     payments = []
- 
+
     while remaining > 0:
         invoice = (
             models.Invoice.objects.filter(enrollment__student=student, amount_due__gt=F("amount_paid"))
@@ -3122,7 +3290,7 @@ def _allocate_payment(student, amount, method, reference, recorded_by, receipt_n
             _record_payment_shared_receipt(invoice, pay_amount, method, reference, recorded_by, receipt_no)
         )
         remaining -= pay_amount
- 
+
     if remaining > 0:
         target = (
             models.Invoice.objects.filter(enrollment__student=student)
@@ -3134,20 +3302,20 @@ def _allocate_payment(student, amount, method, reference, recorded_by, receipt_n
         payments.append(
             _record_payment_shared_receipt(target, remaining, method, reference, recorded_by, receipt_no)
         )
- 
+
     if not payments:
         raise ValueError("This student has no invoices yet - nothing to pay against.")
- 
+
     if sum(p.amount for p in payments) != Decimal(str(amount)):
         raise ValueError("Payment allocation mismatch - nothing was recorded. Please try again.")
- 
+
     if paid_at:
         for p in payments:
             p.paid_at = paid_at
             p.save(update_fields=["paid_at"])
     return payments
- 
- 
+
+
 @transaction.atomic
 def record_split_payment(allocations, method, reference, recorded_by, total_received):
     """
@@ -3163,7 +3331,7 @@ def record_split_payment(allocations, method, reference, recorded_by, total_rece
         raise ValueError(
             f"The amounts add up to KES {total:,.2f} but KES {Decimal(str(total_received)):,.2f} was received."
         )
- 
+
     results = []
     for student, amount in allocations:
         try:
@@ -3174,8 +3342,8 @@ def record_split_payment(allocations, method, reference, recorded_by, total_rece
             raise ValueError(f"{student.admission_no}: {exc}")
         results.append({"student": student, "amount": amount, "payments": payments})
     return results
- 
- 
+
+
 def get_reference_usage(reference):
     """Receipts already recorded with this reference (M-Pesa code etc.), grouped by receipt."""
     reference = (reference or "").strip()
@@ -3199,8 +3367,8 @@ def get_reference_usage(reference):
         })
         entry["amount"] += p.amount
     return list(grouped.values())
- 
- 
+
+
 @transaction.atomic
 def correct_receipt(receipt_no, corrected_by, reason, *, void=False, new_student=None,
                     new_amount=None, new_method=None, new_reference=None):
@@ -3213,26 +3381,26 @@ def correct_receipt(receipt_no, corrected_by, reason, *, void=False, new_student
     reason = (reason or "").strip()
     if not reason:
         raise ValueError("Please give the reason for this correction.")
- 
+
     old = get_receipt_payments(receipt_no)
     if not old:
         raise ValueError("No receipt found with this number.")
     old_student = old[0].invoice.enrollment.student
     if len({p.invoice.enrollment.student_id for p in old}) > 1:
         raise ValueError("This receipt number covers more than one student - fix it in the admin.")
- 
+
     before = receipt_snapshot(old)
     method = new_method or old[0].method
     reference = old[0].reference if new_reference is None else new_reference
     amount = Decimal(str(new_amount)) if new_amount not in (None, "") else Decimal(before["amount"])
     target = new_student or old_student
     receipt_no = old[0].receipt_no
- 
+
     if not void and amount <= 0:
         raise ValueError("Amount must be greater than zero.")
- 
+
     Action = models.ReceiptAdjustment.Action
- 
+
     # Same student + same amount: only method/reference change - edit in place.
     if not void and target.id == old_student.id and amount == Decimal(before["amount"]):
         for p in old:
@@ -3248,7 +3416,7 @@ def correct_receipt(receipt_no, corrected_by, reason, *, void=False, new_student
             inv.amount_paid = inv.payments.aggregate(total=Sum("amount"))["total"] or 0
             inv.save(update_fields=["amount_paid"])
         recalculate_student_invoice_chain(old_student)
- 
+
         new_payments = []
         if not void:
             try:
@@ -3257,7 +3425,7 @@ def correct_receipt(receipt_no, corrected_by, reason, *, void=False, new_student
                 )
             except ValueError as exc:
                 raise ValueError(f"{target.admission_no}: {exc}")
- 
+
     models.ReceiptAdjustment.objects.create(
         receipt_no=receipt_no,
         student=target if new_payments else old_student,
@@ -3268,8 +3436,8 @@ def correct_receipt(receipt_no, corrected_by, reason, *, void=False, new_student
         adjusted_by=corrected_by,
     )
     return new_payments
- 
- 
+
+
 @transaction.atomic
 def create_alumni_balance_account(*, first_name, last_name, admission_no, gender, balance, year_left,
                                   grade_level, stream=None, phone_number="", guardian_name="",
@@ -3284,7 +3452,7 @@ def create_alumni_balance_account(*, first_name, last_name, admission_no, gender
     balance = Decimal(str(balance))
     if balance <= 0:
         raise ValueError("The balance must be greater than zero.")
- 
+
     admission_no = (admission_no or "").strip()
     if not admission_no:
         raise ValueError("Admission number is required (use their old one if you know it).")
@@ -3293,39 +3461,39 @@ def create_alumni_balance_account(*, first_name, last_name, admission_no, gender
     username = admission_no.replace("/", "-")
     if models.User.objects.filter(username=username).exists():
         raise ValueError(f"The username '{username}' is already taken.")
- 
+
     stream = stream or models.Stream.objects.order_by("id").first()
     if not stream:
         raise ValueError("No streams are set up yet.")
- 
+
     academic_year, _ = models.AcademicYear.objects.get_or_create(
         year=year_left,
         defaults={"start_date": date(year_left, 1, 1), "end_date": date(year_left, 12, 31), "is_current": False},
     )
     if academic_year.is_current:
         raise ValueError("Alumni must have left before the current academic year.")
- 
+
     term = models.Term.objects.filter(academic_year=academic_year).order_by("-term_number").first()
     if not term:
         term = models.Term.objects.create(
             academic_year=academic_year, term_number=3,
             start_date=date(year_left, 9, 1), end_date=date(year_left, 12, 31), is_current=False,
         )
- 
+
     fee_structure, _ = models.FeeStructure.objects.get_or_create(
         grade_level=grade_level, term=term, defaults={"total_amount": 0}
     )
     classroom, _ = models.ClassRoom.objects.get_or_create(
         grade_level=grade_level, stream=stream, academic_year=academic_year
     )
- 
+
     user = models.User(
         username=username, first_name=first_name, last_name=last_name,
         phone_number=phone_number, role=models.User.Role.STUDENT, is_active=False,
     )
     user.set_unusable_password()
     user.save()
- 
+
     profile = models.StudentProfile.objects.create(
         user=user, admission_no=admission_no, gender=gender,
         curriculum_type=grade_level.curriculum_type, is_active=False,
@@ -3340,11 +3508,10 @@ def create_alumni_balance_account(*, first_name, last_name, admission_no, gender
         enrollment=enrollment, fee_structure=fee_structure,
         brought_forward=balance, amount_due=balance, amount_paid=0,
     )
- 
+
     if guardian_phone:
         attach_guardian(profile, guardian_name, guardian_phone, guardian_relationship)
     return profile
-
 
 
 # ---------------------------------------------------------------------------
@@ -3440,7 +3607,9 @@ def save_exam_paper_setup(exam, subject, papers, user):
     return get_exam_paper_columns(exam, subject)
 
 
-
+# ---------------------------------------------------------------------------
+# ADMISSION TERM FEE (pro-rated first term)
+# ---------------------------------------------------------------------------
 def resolve_admission_term(classroom, admit_date):
     """
     The term a student admitted on `admit_date` should be billed for:
@@ -3456,8 +3625,8 @@ def resolve_admission_term(classroom, admit_date):
         if term.start_date > admit_date:
             return term
     return None
- 
- 
+
+
 def get_admission_fee_preview(classroom, admit_date=None):
     """
     Works out what a new student would pay for their first term if charged only
@@ -3465,7 +3634,7 @@ def get_admission_fee_preview(classroom, admit_date=None):
     end inclusive). Returns a suggestion only - the school decides the final amount.
     """
     from decimal import ROUND_HALF_UP
- 
+
     admit_date = admit_date or timezone.localdate()
     term = resolve_admission_term(classroom, admit_date)
     if term is None:
@@ -3473,11 +3642,11 @@ def get_admission_fee_preview(classroom, admit_date=None):
             "applicable": False,
             "message": "All terms of this academic year have already ended, so there is no term fee to set.",
         }
- 
+
     total_days = (term.end_date - term.start_date).days + 1
     counted_from = max(admit_date, term.start_date)
     days_remaining = max((term.end_date - counted_from).days + 1, 0)
- 
+
     info = {
         "term_id": term.id,
         "term_label": str(term),
@@ -3487,7 +3656,7 @@ def get_admission_fee_preview(classroom, admit_date=None):
         "days_remaining": days_remaining,
         "admit_date": admit_date.isoformat(),
     }
- 
+
     fee_structure = models.FeeStructure.objects.filter(grade_level=classroom.grade_level, term=term).first()
     if not fee_structure:
         return {
@@ -3496,18 +3665,18 @@ def get_admission_fee_preview(classroom, admit_date=None):
             "message": f"No fee structure is set up yet for {classroom.grade_level.name} in {term}. "
                        "Ask Finance to add it first.",
         }
- 
+
     full_fee = fee_structure.total_amount
     prorated = (full_fee * days_remaining / total_days).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
- 
+
     return {
         **info,
         "applicable": True,
         "full_fee": float(full_fee),
         "prorated_fee": float(prorated),
     }
- 
- 
+
+
 @transaction.atomic
 def set_admission_term_fee(student, amount, user, reason=""):
     """
@@ -3520,27 +3689,27 @@ def set_admission_term_fee(student, amount, user, reason=""):
     amount = Decimal(str(amount))
     if amount < 0:
         raise ValueError("The term fee cannot be negative.")
- 
+
     enrollment = student.current_enrollment
     if not enrollment:
         raise ValueError("This student has no enrollment in the current academic year.")
- 
+
     admit_date = student.date_admitted
     if hasattr(admit_date, "date"):
         admit_date = admit_date.date()
- 
+
     term = resolve_admission_term(enrollment.classroom, admit_date)
     if term is None:
         raise ValueError("All terms of this academic year have already ended.")
- 
+
     invoice = generate_invoice(enrollment, term)  # returns the existing invoice if there is one
     full_fee = invoice.fee_structure.total_amount
- 
+
     invoice.amount_due = amount + invoice.brought_forward
     invoice.save(update_fields=["amount_due"])
     recalculate_student_invoice_chain(student)
     invoice.refresh_from_db()
- 
+
     note = (
         f"{timezone.localdate():%Y-%m-%d}: {term} fee set to KES {amount:,.2f} "
         f"(full term fee KES {full_fee:,.2f}) by {user.get_full_name() or user.username}"
@@ -3550,14 +3719,10 @@ def set_admission_term_fee(student, amount, user, reason=""):
         note += f" - {reason}"
     enrollment.remarks = f"{enrollment.remarks}\n{note}".strip() if enrollment.remarks else note
     enrollment.save(update_fields=["remarks"])
- 
+
     return invoice
 
 
-
-
-
- 
 # ---------------------------------------------------------------------------
 # OTHER PAYMENTS (admission, uniform, ID, graduation, trip, damages, ...)
 # Kept OUT of the fee ledger on purpose - they never affect fee balances.
@@ -3572,8 +3737,8 @@ def create_student_charge(student, charge_type, amount=None, description="", due
         student=student, charge_type=charge_type, amount=amount,
         description=description, due_date=due_date, created_by=created_by,
     )
- 
- 
+
+
 def bulk_create_student_charges(students, charge_type, amount=None, description="", due_date=None, created_by=None):
     """e.g. a trip fee for every student in a classroom. Skips students already charged the same type+description."""
     created, skipped = [], []
@@ -3587,8 +3752,8 @@ def bulk_create_student_charges(students, charge_type, amount=None, description=
                 continue
             created.append(create_student_charge(student, charge_type, amount, description, due_date, created_by))
     return {"created": created, "skipped": skipped}
- 
- 
+
+
 def _refresh_charge_status(charge):
     S = models.StudentCharge.Status
     if charge.status in (S.WAIVED, S.CANCELLED):
@@ -3600,8 +3765,8 @@ def _refresh_charge_status(charge):
     else:
         charge.status = S.UNPAID
     charge.save(update_fields=["amount_paid", "status"])
- 
- 
+
+
 @transaction.atomic
 def record_other_payment(student, amount, method, reference, recorded_by,
                          charge_type=None, charge=None, notes=""):
@@ -3612,7 +3777,7 @@ def record_other_payment(student, amount, method, reference, recorded_by,
     amount = Decimal(str(amount))
     if amount <= 0:
         raise ValueError("Payment amount must be greater than zero.")
- 
+
     if charge:
         charge = models.StudentCharge.objects.select_for_update().get(pk=charge.pk)
         if charge.student_id != student.id:
@@ -3626,7 +3791,7 @@ def record_other_payment(student, amount, method, reference, recorded_by,
         raise ValueError("Choose a payment type.")
     if not charge_type.is_active:
         raise ValueError("This charge type is inactive.")
- 
+
     payment = models.OtherPayment.objects.create(
         student=student, charge_type=charge_type, charge=charge, amount=amount,
         method=method, reference=reference, notes=notes,
@@ -3636,8 +3801,8 @@ def record_other_payment(student, amount, method, reference, recorded_by,
         charge.amount_paid = charge.payments.aggregate(t=Sum("amount"))["t"] or 0
         _refresh_charge_status(charge)
     return payment
- 
- 
+
+
 @transaction.atomic
 def waive_or_cancel_charge(charge, action, user, reason):
     """action: 'WAIVE' or 'CANCEL'. Blocked once money has been paid, so receipts never point at a dead charge."""
@@ -3650,8 +3815,8 @@ def waive_or_cancel_charge(charge, action, user, reason):
     charge.description = f"{charge.description} [{charge.status}: {reason.strip()}]"[:255]
     charge.save(update_fields=["status", "description"])
     return charge
- 
- 
+
+
 def get_student_other_charges_summary(student):
     open_charges = models.StudentCharge.objects.filter(
         student=student,
@@ -3661,8 +3826,8 @@ def get_student_other_charges_summary(student):
         "total_outstanding": sum((c.balance for c in open_charges), Decimal("0")),
         "charges": list(open_charges),
     }
- 
- 
+
+
 def get_any_receipt(receipt_no):
     """Fee receipt first, then other-payment receipt. Handy for any lookup that must accept both kinds."""
     receipt_no = (receipt_no or "").strip().upper()
@@ -3673,4 +3838,3 @@ def get_any_receipt(receipt_no):
         "student__user", "charge_type", "recorded_by"
     ).first()
     return {"kind": "OTHER", "payment": other} if other else None
- 

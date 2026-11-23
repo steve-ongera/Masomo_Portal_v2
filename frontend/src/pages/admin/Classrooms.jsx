@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import api, { academicsApi, calendarApi, reportCardsApi, teacherApi } from "../../services/api";
+import api, { academicsApi, calendarApi, examsApi, reportCardsApi, teacherApi } from "../../services/api";
 import TableSkeleton from "../../components/TableSkeleton";
 import Pagination from "../../components/Pagination";
 import Modal from "../../components/Modal";
@@ -167,6 +167,10 @@ export default function AdminClassrooms() {
   const [streams, setStreams] = useState([]);
   const [years, setYears] = useState([]);
   const [teachers, setTeachers] = useState([]);
+  // Every term of every academic year + every exam type: used by the
+  // "Show positions from..." picker (e.g. 2026 Term 3, End Term exam).
+  const [allTerms, setAllTerms] = useState([]);
+  const [examTypes, setExamTypes] = useState([]);
 
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("info");
@@ -205,6 +209,11 @@ export default function AdminClassrooms() {
   const [viewResults, setViewResults] = useState(null); // { term, subjects: [...], results: [...], available_exams: [...] }
   const [viewResultsLoading, setViewResultsLoading] = useState(false);
   const [printingReportCard, setPrintingReportCard] = useState(null); // enrollment_id or "ALL"
+
+  // ---- Position source: "" = same exams as the marks shown; otherwise a
+  // term (any year, e.g. 2026 Term 3) + optional exam type (e.g. End Term).
+  const [viewPosTerm, setViewPosTerm] = useState("");
+  const [viewPosExamType, setViewPosExamType] = useState("");
 
   // ---- Next-term fee prompt (applies only to downloaded report cards) ----
   const [showFeeModal, setShowFeeModal] = useState(false);
@@ -261,7 +270,7 @@ export default function AdminClassrooms() {
 
   useEffect(() => { loadClassrooms(); }, [loadClassrooms]);
 
-  // ---- Load static reference data (grades, streams, years, teachers) ----
+  // ---- Load static reference data (grades, streams, years, teachers, all terms, exam types) ----
   const loadStaticData = async () => {
     try {
       const [g, s, y, t] = await Promise.all([
@@ -277,9 +286,28 @@ export default function AdminClassrooms() {
     } catch (error) {
       console.error("Failed to load reference data:", error);
     }
+
+    // Loaded separately so a failure here never breaks the rest of the page.
+    try {
+      const [termsRes, typesRes] = await Promise.all([
+        calendarApi.terms({ page_size: 500 }),
+        examsApi.examTypes(),
+      ]);
+      setAllTerms(termsRes.data.results ?? termsRes.data);
+      setExamTypes(typesRes.data.results ?? typesRes.data);
+    } catch (error) {
+      console.error("Failed to load terms / exam types for position picker:", error);
+    }
   };
 
   useEffect(() => { loadStaticData(); }, []);
+
+  // Terms of every year, newest first, labelled like "2026 · Term 3".
+  const termYear = (t) =>
+    t.academic_year_year ?? years.find((y) => String(y.id) === String(t.academic_year))?.year ?? "";
+  const posTermOptions = [...allTerms]
+    .map((t) => ({ id: t.id, year: termYear(t), number: t.term_number }))
+    .sort((a, b) => (Number(b.year) - Number(a.year)) || (b.number - a.number));
 
   // ---------------- ADD GRADE / STREAM / SINGLE CLASSROOM ----------------
   const addGradeLevel = async (e) => {
@@ -373,12 +401,18 @@ export default function AdminClassrooms() {
   };
 
   // ---------------- VIEW (+ student roster + ranking/results) ----------------
-  const loadViewResults = async (classroomId, termId, examId = "") => {
+  // posTermId / posExamTypeId are passed explicitly (not read from state) so
+  // a reload triggered by a dropdown change always uses the NEW value.
+  const loadViewResults = async (classroomId, termId, examId = "", posTermId = "", posExamTypeId = "") => {
     if (!classroomId || !termId) return;
     setViewResultsLoading(true);
     try {
       const params = { term: termId };
       if (examId) params.exam = examId;
+      if (posTermId) {
+        params.position_term = posTermId;
+        if (posExamTypeId) params.position_exam_type = posExamTypeId;
+      }
       const { data } = await api.get(`/classrooms/${classroomId}/results/`, { params });
       setViewResults(data);
       setViewExams(data.available_exams || []);
@@ -394,12 +428,32 @@ export default function AdminClassrooms() {
   const handleViewTermChange = async (termId) => {
     setViewSelectedTerm(termId);
     setViewSelectedExam("");
-    if (viewClassroom && termId) await loadViewResults(viewClassroom.id, termId, "");
+    if (viewClassroom && termId) {
+      await loadViewResults(viewClassroom.id, termId, "", viewPosTerm, viewPosExamType);
+    }
   };
 
   const handleViewExamChange = async (examId) => {
     setViewSelectedExam(examId);
-    if (viewClassroom && viewSelectedTerm) await loadViewResults(viewClassroom.id, viewSelectedTerm, examId);
+    if (viewClassroom && viewSelectedTerm) {
+      await loadViewResults(viewClassroom.id, viewSelectedTerm, examId, viewPosTerm, viewPosExamType);
+    }
+  };
+
+  const handlePosTermChange = async (posTermId) => {
+    setViewPosTerm(posTermId);
+    const examType = posTermId ? viewPosExamType : "";
+    if (!posTermId) setViewPosExamType("");
+    if (viewClassroom && viewSelectedTerm) {
+      await loadViewResults(viewClassroom.id, viewSelectedTerm, viewSelectedExam, posTermId, examType);
+    }
+  };
+
+  const handlePosExamTypeChange = async (examTypeId) => {
+    setViewPosExamType(examTypeId);
+    if (viewClassroom && viewSelectedTerm) {
+      await loadViewResults(viewClassroom.id, viewSelectedTerm, viewSelectedExam, viewPosTerm, examTypeId);
+    }
   };
 
   const openView = async (classroom) => {
@@ -414,6 +468,8 @@ export default function AdminClassrooms() {
     setViewSelectedTerm("");
     setViewSelectedExam("");
     setViewExams([]);
+    setViewPosTerm("");
+    setViewPosExamType("");
     try {
       const [studentsRes, termsRes] = await Promise.all([
         api.get(`/classrooms/${classroom.id}/students/`),
@@ -426,7 +482,7 @@ export default function AdminClassrooms() {
       const defaultTerm = termList.find((t) => t.is_current) || termList[0];
       if (defaultTerm) {
         setViewSelectedTerm(defaultTerm.id);
-        await loadViewResults(classroom.id, defaultTerm.id, "");
+        await loadViewResults(classroom.id, defaultTerm.id, "", "", "");
       }
     } catch (err) {
       console.error("Failed to load classroom roster:", err);
@@ -750,12 +806,17 @@ export default function AdminClassrooms() {
   // The subject table's row height is calculated from the space left over,
   // so the bottom block always stays on the same page regardless of how
   // many subjects a student has.
+  //
+  // POSITIONS: normally taken from the exam(s) being printed. When a
+  // "position basis" is chosen (e.g. 2026 Term 3 End Term), resultRow
+  // already carries those positions and `positionBasis` holds the label, which
+  // is printed next to the position so the reader knows where it comes from.
   // ================================================================
   const drawReportCardPage = (
     doc,
     {
       classroom, termLabel, titleText, resultRow, logoBase64, qrCodeBase64, teacherMap, isFirstPage,
-      nextFee = null, nextFeeLabel = "Next Term",
+      nextFee = null, nextFeeLabel = "Next Term", positionBasis = null,
     }
   ) => {
     if (!isFirstPage) doc.addPage();
@@ -961,22 +1022,27 @@ export default function AdminClassrooms() {
     y += sumH;
 
     // ---- Second summary row: Class Position + Overall (grade-wide) Position ----
-    drawCell(M, y, w1, sumH, "Class Position", { bold: true, fill: true });
-    drawCell(
-      M + w1, y, v1, sumH,
+    // With a position basis the text says WHERE the position comes from,
+    // e.g. "3 out of 45 (Grade 8 Blue, Term 3 2026 End Term)".
+    const classPosText =
       resultRow.class_position != null
-        ? `${resultRow.class_position} out of ${resultRow.class_size ?? "-"}`
-        : "-",
-      { align: "center" }
-    );
-    drawCell(M + w1 + v1, y, w2, sumH, "Overall Position", { bold: true, fill: true });
-    drawCell(
-      M + w1 + v1 + w2, y, cw - w1 - v1 - w2, sumH,
+        ? `${resultRow.class_position} out of ${resultRow.class_size ?? "-"}` +
+          (positionBasis
+            ? ` (${resultRow.position_classroom ? `${resultRow.position_classroom}, ` : ""}${positionBasis})`
+            : "")
+        : "-";
+    const overallPosText =
       resultRow.overall_position != null
-        ? `${resultRow.overall_position} out of ${resultRow.overall_size ?? "-"} (${classroom.grade_level_name}, all streams)`
-        : "-",
-      { align: "center" }
-    );
+        ? `${resultRow.overall_position} out of ${resultRow.overall_size ?? "-"} ` +
+          (positionBasis
+            ? `(${positionBasis}, whole grade)`
+            : `(${classroom.grade_level_name}, all streams)`)
+        : "-";
+
+    drawCell(M, y, w1, sumH, "Class Position", { bold: true, fill: true });
+    drawCell(M + w1, y, v1, sumH, classPosText, { align: "center" });
+    drawCell(M + w1 + v1, y, w2, sumH, "Overall Position", { bold: true, fill: true });
+    drawCell(M + w1 + v1 + w2, y, cw - w1 - v1 - w2, sumH, overallPosText, { align: "center" });
     y += sumH + 5;
 
     // ---- FEE STATEMENT: balance + next-term fee only ----
@@ -1130,6 +1196,40 @@ export default function AdminClassrooms() {
   // used for the "Overall Position: X out of N" line on the report card.
   const currentOverallSize = () => viewResults?.overall_size ?? 0;
 
+  // True when positions come from another term/exam (e.g. 2026 Term 3 End Term).
+  const positionBasisLabel = () => viewResults?.position_basis || null;
+
+  // Rows in table/print order. With a position basis, sort by that position
+  // (unranked students last) since the server order follows the marks scope.
+  const displayRows = () => {
+    const rows = viewResults?.results || [];
+    if (!positionBasisLabel()) return rows;
+    return [...rows].sort((a, b) => {
+      const pa = a.ref_class_position;
+      const pb = b.ref_class_position;
+      if (pa == null && pb == null) return 0;
+      if (pa == null) return 1;
+      if (pb == null) return -1;
+      return pa - pb;
+    });
+  };
+
+  // Builds the row the report card is drawn from: the marks always come from
+  // the exam(s) being printed; the positions come from the chosen basis if one
+  // is set, otherwise from the same exam(s).
+  const buildCardRow = (row) => {
+    const base = { ...row, class_size: currentClassSize(), overall_size: currentOverallSize() };
+    if (!positionBasisLabel()) return base;
+    return {
+      ...base,
+      class_position: row.ref_class_position ?? null,
+      class_size: row.ref_class_size ?? null,
+      overall_position: row.ref_overall_position ?? null,
+      overall_size: row.ref_overall_size ?? null,
+      position_classroom: row.ref_classroom || "",
+    };
+  };
+
   // "Term 2, 2026" + "TERM 2, 2026 END OF TERM EXAMINATION REPORT" for the card header.
   const reportCardMeta = () => {
     const term = viewTerms.find((t) => String(t.id) === String(viewResults?.term_id));
@@ -1138,7 +1238,13 @@ export default function AdminClassrooms() {
     const exam = viewSelectedExam
       ? viewExams.find((e) => String(e.id) === String(viewSelectedExam))
       : null;
-    const examWording = exam ? String(exam.name).toUpperCase() : "END OF TERM";
+    // Use the exam TYPE (e.g. "Midterm"), not the full exam name, because the
+    // name already contains the grade, term and year ("PP1 Midterm Exam – Term 1 2027").
+    const typeName = String(exam?.exam_type_name || exam?.name || "")
+      .replace(/\s*[-–—].*$/, "")
+      .replace(/\s*exam(ination)?s?\s*$/i, "")
+      .trim();
+    const examWording = exam ? (typeName || "END OF TERM").toUpperCase() : "END OF TERM";
     return {
       termLabel,
       titleText: `${termLabel.toUpperCase()} ${examWording} EXAMINATION REPORT`,
@@ -1268,13 +1374,14 @@ export default function AdminClassrooms() {
         classroom: viewClassroom,
         termLabel,
         titleText,
-        resultRow: { ...resultRow, class_size: currentClassSize(), overall_size: currentOverallSize() },
+        resultRow: buildCardRow(resultRow),
         logoBase64,
         qrCodeBase64: qrResult.qr,
         teacherMap,
         isFirstPage: true,
         nextFee,
         nextFeeLabel: nextTermLabel(),
+        positionBasis: positionBasisLabel(),
       });
       doc.save(`${resultRow.admission_no}_report_card.pdf`.replace(/\s+/g, "_"));
 
@@ -1298,10 +1405,9 @@ export default function AdminClassrooms() {
     setPrintingReportCard("ALL");
     try {
       const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-      const classSize = currentClassSize();
-      const overallSize = currentOverallSize();
       const { termLabel, titleText } = reportCardMeta();
       const feeLabelForNextTerm = nextTermLabel();
+      const basis = positionBasisLabel();
 
       // Fetch the logo, the subject teachers and every student's verification
       // QR up front, in parallel, so the page-drawing loop below doesn't
@@ -1311,7 +1417,7 @@ export default function AdminClassrooms() {
         getImageBase64(logoImage),
         loadSubjectTeachers(viewClassroom),
         Promise.all(
-          viewResults.results.map(async (row) => {
+          displayRows().map(async (row) => {
             qrByEnrollment[row.enrollment_id] = await fetchReportCardQr(row.verification_token);
           })
         ),
@@ -1319,7 +1425,7 @@ export default function AdminClassrooms() {
 
       let missingQrCount = 0;
       const failureReasons = new Set();
-      viewResults.results.forEach((row, idx) => {
+      displayRows().forEach((row, idx) => {
         const result = qrByEnrollment[row.enrollment_id] || { qr: null, reason: "network_error" };
         const qr = result.qr;
         if (!qr) {
@@ -1330,13 +1436,14 @@ export default function AdminClassrooms() {
           classroom: viewClassroom,
           termLabel,
           titleText,
-          resultRow: { ...row, class_size: classSize, overall_size: overallSize },
+          resultRow: buildCardRow(row),
           logoBase64,
           qrCodeBase64: qr,
           teacherMap,
           isFirstPage: idx === 0,
           nextFee,
           nextFeeLabel: feeLabelForNextTerm,
+          positionBasis: basis,
         });
       });
       const filename = `${viewClassroom.grade_level_name}_${viewClassroom.stream_name}_${viewClassroom.academic_year_year}_report_cards.pdf`
@@ -2175,16 +2282,88 @@ export default function AdminClassrooms() {
                   </div>
                 </div>
 
+                {/* ---- Position source: same exams, or another term/year + exam type ---- */}
+                <div className="d-flex align-items-center gap-2 flex-wrap mb-2">
+                  <span className="form-text-hint mb-0">
+                    <i className="bi bi-trophy me-1"></i>
+                    Show positions from:
+                  </span>
+                  <select
+                    className="form-select form-select-sm w-auto"
+                    aria-label="Position term"
+                    value={viewPosTerm}
+                    onChange={(e) => handlePosTermChange(e.target.value)}
+                    disabled={!viewSelectedTerm || viewResultsLoading}
+                    title="Choose which term's results the positions on the report card come from"
+                  >
+                    <option value="">Same exams as the marks above</option>
+                    {posTermOptions.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.year} · Term {t.number}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="form-select form-select-sm w-auto"
+                    aria-label="Position exam type"
+                    value={viewPosExamType}
+                    onChange={(e) => handlePosExamTypeChange(e.target.value)}
+                    disabled={!viewPosTerm || viewResultsLoading}
+                    title="Pick one exam type (e.g. End Term), or combine every exam in that term"
+                  >
+                    <option value="">All exams combined</option>
+                    {examTypes.map((et) => (
+                      <option key={et.id} value={et.id}>{et.name}</option>
+                    ))}
+                  </select>
+                  {viewPosTerm && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-light"
+                      onClick={() => handlePosTermChange("")}
+                    >
+                      <i className="bi bi-x-lg"></i> Reset
+                    </button>
+                  )}
+                </div>
+
                 {viewSelectedTerm && !viewResultsLoading && (
                   <p className="form-text-hint mb-2">
-                    Ranking based on: <strong>{currentExamLabel()}</strong>
+                    Marks based on: <strong>{currentExamLabel()}</strong>
                     {viewExams.length === 0 && " — no exams configured yet for this grade/term."}
                     {viewClassroom.is_promoted && viewExams.length > 0 &&
                       ` — showing the ${viewClassroom.academic_year_year} cohort, including students since promoted.`}
-                    {viewResults?.overall_size
-                      ? ` Overall position is across all ${viewClassroom.grade_level_name} streams (${viewResults.overall_size} students).`
-                      : ""}
+                    {viewResults?.position_basis ? (
+                      <>
+                        {" "}Positions based on: <strong>{viewResults.position_basis}</strong> — each student is
+                        ranked in the class and grade they were in during that term.
+                      </>
+                    ) : (
+                      viewResults?.overall_size
+                        ? ` Overall position is across all ${viewClassroom.grade_level_name} streams (${viewResults.overall_size} students).`
+                        : ""
+                    )}
                   </p>
+                )}
+
+                {viewSelectedTerm && !viewResultsLoading && viewResults && (
+                  <>
+                    {!viewResults.position_basis && viewResults.ranking_enabled === false && (
+                      <div className="alert alert-info py-2 mb-2">
+                        <i className="bi bi-info-circle me-1"></i>
+                        Positions are not ranked for {viewClassroom.grade_level_name} by default.
+                        Choose a term under <strong>Show positions from</strong> to show them anyway.
+                      </div>
+                    )}
+                    {viewResults.position_basis &&
+                      !viewResults.results?.some((r) => r.ref_class_position != null) && (
+                        <div className="alert alert-warning py-2 mb-2">
+                          <i className="bi bi-exclamation-triangle me-1"></i>
+                          No positions found for <strong>{viewResults.position_basis}</strong>. Either no
+                          marks are entered for that term/exam, or these students weren't enrolled that year.
+                        </div>
+                      )}
+                  </>
                 )}
 
                 {viewResultsLoading ? (
@@ -2225,57 +2404,62 @@ export default function AdminClassrooms() {
                           </tr>
                         </thead>
                         <tbody>
-                          {viewResults.results.map((r) => (
-                            <tr key={r.enrollment_id}>
-                              <td className="cell-mono fw-bold">{r.class_position ?? "-"}</td>
-                              <td className="cell-mono fw-bold">{r.overall_position ?? "-"}</td>
-                              <td className="cell-mono text-brand fw-semibold">{r.admission_no}</td>
-                              <td>
-                                <div className="table-avatar-cell">
-                                  <div className="avatar-sm">{initials(r.full_name, "S")}</div>
-                                  <span className="cell-name">{r.full_name}</span>
-                                </div>
-                              </td>
-                              <td>
-                                {r.enrollment_status_display ? (
-                                  <span className={`badge ${r.enrollment_status === "ACTIVE" ? "badge-success" : "badge-neutral"}`}>
-                                    {r.enrollment_status_display}
-                                  </span>
-                                ) : "-"}
-                              </td>
-                              <td className="cell-mono">{r.average_marks != null ? `${r.average_marks}%` : "-"}</td>
-                              <td className="cell-mono">{r.total_marks != null ? r.total_marks : "-"}</td>
-                              <td className="fw-bold">{r.overall_grade || "-"}</td>
-                              <td className="cell-mono">{r.average_points ?? "-"}</td>
-                              <td>
-                                {r.has_marks ? (
-                                  <span className="badge badge-neutral">{r.remark}</span>
-                                ) : (
-                                  <span className="cell-muted">{r.remark}</span>
-                                )}
-                              </td>
-                              <td>
-                                <span className={`badge ${feeBadgeClass(r.fee_balance)}`} title={feeLabel(r.fee_balance)}>
-                                  {feeLabel(r.fee_balance)}
-                                </span>
-                              </td>
-                              <td>
-                                <button
-                                  className="btn btn-sm btn-secondary btn-icon"
-                                  title="Print report card"
-                                  aria-label="Print report card"
-                                  onClick={() => requestPrint(r)}
-                                  disabled={printingReportCard === r.enrollment_id || printingReportCard === "ALL"}
-                                >
-                                  {printingReportCard === r.enrollment_id ? (
-                                    <span className="spinner-border spinner-border-sm"></span>
+                          {displayRows().map((r) => {
+                            const basisActive = !!viewResults.position_basis;
+                            const classPos = basisActive ? r.ref_class_position : r.class_position;
+                            const overallPos = basisActive ? r.ref_overall_position : r.overall_position;
+                            return (
+                              <tr key={r.enrollment_id}>
+                                <td className="cell-mono fw-bold">{classPos ?? "-"}</td>
+                                <td className="cell-mono fw-bold">{overallPos ?? "-"}</td>
+                                <td className="cell-mono text-brand fw-semibold">{r.admission_no}</td>
+                                <td>
+                                  <div className="table-avatar-cell">
+                                    <div className="avatar-sm">{initials(r.full_name, "S")}</div>
+                                    <span className="cell-name">{r.full_name}</span>
+                                  </div>
+                                </td>
+                                <td>
+                                  {r.enrollment_status_display ? (
+                                    <span className={`badge ${r.enrollment_status === "ACTIVE" ? "badge-success" : "badge-neutral"}`}>
+                                      {r.enrollment_status_display}
+                                    </span>
+                                  ) : "-"}
+                                </td>
+                                <td className="cell-mono">{r.average_marks != null ? `${r.average_marks}%` : "-"}</td>
+                                <td className="cell-mono">{r.total_marks != null ? r.total_marks : "-"}</td>
+                                <td className="fw-bold">{r.overall_grade || "-"}</td>
+                                <td className="cell-mono">{r.average_points ?? "-"}</td>
+                                <td>
+                                  {r.has_marks ? (
+                                    <span className="badge badge-neutral">{r.remark}</span>
                                   ) : (
-                                    <i className="bi bi-file-earmark-pdf"></i>
+                                    <span className="cell-muted">{r.remark}</span>
                                   )}
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
+                                </td>
+                                <td>
+                                  <span className={`badge ${feeBadgeClass(r.fee_balance)}`} title={feeLabel(r.fee_balance)}>
+                                    {feeLabel(r.fee_balance)}
+                                  </span>
+                                </td>
+                                <td>
+                                  <button
+                                    className="btn btn-sm btn-secondary btn-icon"
+                                    title="Print report card"
+                                    aria-label="Print report card"
+                                    onClick={() => requestPrint(r)}
+                                    disabled={printingReportCard === r.enrollment_id || printingReportCard === "ALL"}
+                                  >
+                                    {printingReportCard === r.enrollment_id ? (
+                                      <span className="spinner-border spinner-border-sm"></span>
+                                    ) : (
+                                      <i className="bi bi-file-earmark-pdf"></i>
+                                    )}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

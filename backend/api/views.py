@@ -845,6 +845,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
     def results(self, request, pk=None):
         """
         GET /classrooms/{id}/results/?term=<id>&exam=<id>&include_left=1
+            [&position_term=<Term id>[&position_exam_type=<ExamType id>]]
 
         Ranked results for the cohort that sat in this classroom, for one
         term: overall average/position, per-subject average %, grade
@@ -865,6 +866,16 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
 
         Both positions are null for stages with no positions (PP1 - Grade 3,
         see stages.NO_RANKING_STAGES).
+
+        POSITION BASIS (optional): pass position_term (+ position_exam_type)
+        to take the positions from a different term / exam type than the
+        marks shown (e.g. marks from Term 1 Midterm, positions from
+        Term 3 End Term). Each row then also carries ref_class_position,
+        ref_class_size, ref_overall_position, ref_overall_size and
+        ref_classroom, and the response carries `position_basis` (a label).
+        Choosing a basis explicitly overrides the PP1 - Grade 3 no-ranking
+        rule. The verification token then also encodes the basis so the QR
+        page matches the printed card.
 
         ACCESS: Admin/Finance/superuser see any classroom. A Teacher may
         only view a classroom they are the class_teacher of - subject
@@ -1153,13 +1164,50 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         for enrollment in left_enrollments:
             results_payload.append(build_row(score_enrollment(enrollment), None))
 
-        if not stages.ranking_enabled(classroom.grade_level):
+        ranking_on = stages.ranking_enabled(classroom.grade_level)
+        if not ranking_on:
             for r in results_payload:
                 r["class_position"] = None
                 r["overall_position"] = None
 
+        # ---- optional: positions taken from another term / exam type ----
+        # ?position_term=<Term id>[&position_exam_type=<ExamType id>]
+        position_basis = None
+        position_term_id = request.query_params.get("position_term")
+        if position_term_id:
+            pos_term = generics.get_object_or_404(
+                models.Term.objects.select_related("academic_year"), pk=position_term_id
+            )
+            pos_exam_type = None
+            pos_exam_type_id = request.query_params.get("position_exam_type")
+            if pos_exam_type_id:
+                pos_exam_type = generics.get_object_or_404(models.ExamType, pk=pos_exam_type_id)
+
+            ref = services.get_reference_positions(
+                pos_term, pos_exam_type,
+                [r["student_id"] for r in results_payload],
+                force_ranking=True,   # explicit choice overrides the PP1-Grade 3 no-ranking rule
+            )
+            position_basis = services.reference_basis_label(pos_term, pos_exam_type)
+
+            for r in results_payload:
+                info = ref.get(r["student_id"])
+                r["ref_class_position"] = info["class_position"] if info else None
+                r["ref_class_size"] = info["class_size"] if info else None
+                r["ref_overall_position"] = info["overall_position"] if info else None
+                r["ref_overall_size"] = info["overall_size"] if info else None
+                r["ref_classroom"] = info["classroom"] if info else ""
+                # QR must carry the position basis so the verify page matches the card
+                r["verification_token"] = services.generate_report_card_token(
+                    r["enrollment_id"], term.id,
+                    selected_exam.id if selected_exam else None,
+                    pos_term.id, pos_exam_type.id if pos_exam_type else None,
+                )
+
         return Response({
             "classroom": str(classroom),
+            "ranking_enabled": ranking_on,
+            "position_basis": position_basis,
             "academic_year": classroom.academic_year.year,
             "term": str(term),
             "term_id": term.id,

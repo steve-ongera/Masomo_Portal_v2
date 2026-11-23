@@ -157,11 +157,13 @@ const ID_FULL = [ID_SCAN_ITEM, ID_LOOKUP_ITEM, ID_ISSUE_ITEM];
 // STAFF SELF-SERVICE. Every role except STUDENT and PARENT is a school
 // employee: they can open the gate-QR sign in/out page
 // (/my-attendance/scan/:token - reached by scanning the rotating QR on
-// the HR gate screen, so it needs no sidebar link) and read their own
-// released payslips. Keep in sync with STAFF_ROLES in App.jsx.
+// the HR gate screen, so it needs no sidebar link), read their own
+// released payslips and request leave (sick, annual...) for HR to
+// approve. Keep in sync with STAFF_ROLES in App.jsx.
 // -----------------------------------------------------------------
 const MY_ATTENDANCE = { to: "/my-attendance/scan", icon: "bi-qr-code-scan", label: "Sign In / Out" };
 const MY_PAYSLIPS = { to: "/my-payslips", icon: "bi-cash-stack", label: "My Payslips" };
+const MY_LEAVE = { to: "/my-leave", icon: "bi-calendar2-plus", label: "My Leave" };
 
 export const NAV_BY_ROLE = {
   // -----------------------------------------------------------------
@@ -259,6 +261,7 @@ export const NAV_BY_ROLE = {
       items: [
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
         { to: "/admin/license", icon: "bi-key-fill", label: "License" },
@@ -336,6 +339,7 @@ export const NAV_BY_ROLE = {
       items: [
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
         { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
@@ -429,6 +433,7 @@ export const NAV_BY_ROLE = {
       items: [
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
         { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
@@ -478,6 +483,7 @@ export const NAV_BY_ROLE = {
       items: [
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
         { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
@@ -516,6 +522,7 @@ export const NAV_BY_ROLE = {
         { to: "/notifications", icon: "bi-bell", label: "Notifications" },
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
       ],
     },
     {
@@ -533,8 +540,8 @@ export const NAV_BY_ROLE = {
     },
   ],
 
-  // STUDENT and PARENT are deliberately NOT staff: no payslips and no
-  // gate-QR sign in/out (see STAFF_ROLES in App.jsx).
+  // STUDENT and PARENT are deliberately NOT staff: no payslips, no leave
+  // and no gate-QR sign in/out (see STAFF_ROLES in App.jsx).
   STUDENT: [
     {
       items: [
@@ -680,6 +687,7 @@ export const NAV_BY_ROLE = {
         { to: "/notifications", icon: "bi-bell", label: "Notifications" },
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
       ],
     },
     {
@@ -721,6 +729,7 @@ export const NAV_BY_ROLE = {
       items: [
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
         { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
@@ -749,6 +758,7 @@ export const NAV_BY_ROLE = {
         { to: "/notifications", icon: "bi-bell", label: "Notifications" },
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
       ],
     },
     {
@@ -805,6 +815,7 @@ export const NAV_BY_ROLE = {
       items: [
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
         { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
@@ -836,6 +847,7 @@ export const NAV_BY_ROLE = {
       items: [
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
         { to: "/user-manual", icon: "bi-play-circle", label: "User Manual" },
@@ -849,6 +861,8 @@ export const NAV_BY_ROLE = {
   // attendance (incl. the rotating gate QR screen), leave, payroll &
   // payslips, and HR reports. Pages live under /hr/* in App.jsx and are
   // backed by the separate `hr` Django app.
+  // "Leave Requests" (under Attendance & Leave) is where HR approves
+  // other people's requests; "My Leave" (under Account) is HR's own.
   // -----------------------------------------------------------------
   HR: [
     {
@@ -894,6 +908,7 @@ export const NAV_BY_ROLE = {
       items: [
         MY_ATTENDANCE,
         { to: "/my-payslips", icon: "bi-receipt", label: "My Payslips" },
+        MY_LEAVE,
         { to: "/profile", icon: "bi-person", label: "My Profile" },
         { to: "/change-password", icon: "bi-shield-lock", label: "Change Password" },
       ],
@@ -903,15 +918,16 @@ export const NAV_BY_ROLE = {
   // -----------------------------------------------------------------
   // STAFF — employees with no other role (support staff, ICT,
   // administration, store keeper). They sign in/out by scanning the
-  // gate QR with their own phone, read their own payslips here, take
-  // the morning student gate scan, and handle store receiving (goods
-  // received & returns).
+  // gate QR with their own phone, read their own payslips and request
+  // leave here, take the morning student gate scan, and handle store
+  // receiving (goods received & returns).
   // -----------------------------------------------------------------
   STAFF: [
     {
       items: [
         MY_ATTENDANCE,
         MY_PAYSLIPS,
+        MY_LEAVE,
         ID_SCAN_ITEM,
         { to: "/notifications", icon: "bi-bell", label: "Notifications" },
       ],

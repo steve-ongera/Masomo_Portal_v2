@@ -6,6 +6,12 @@ const cellKey = (enrollmentId, subjectId, paperId) =>
 
 const isAbsentValue = (v) => /^a(bs)?$/i.test((v ?? "").trim());
 
+const STATUS_BADGE = {
+  PROMOTED: "badge-gold",
+  GRADUATED: "badge-neutral",
+  REPEATED: "badge-neutral",
+};
+
 export default function AdminMarkEntry() {
   // ---------- selection ----------
   const [classrooms, setClassrooms] = useState([]);
@@ -22,7 +28,7 @@ export default function AdminMarkEntry() {
 
   // ---------- sheet ----------
   const [sheet, setSheet] = useState(null);
-  const [values, setValues] = useState({}); // cellKey -> "45" | "A" | ""
+  const [values, setValues] = useState({});
   const [original, setOriginal] = useState({});
   const [loadingSheet, setLoadingSheet] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -30,7 +36,7 @@ export default function AdminMarkEntry() {
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState("info");
 
-  // ---------- per-exam paper setup (papers + "out of") ----------
+  // ---------- per-exam paper setup ----------
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupSubjectId, setSetupSubjectId] = useState("");
   const [draft, setDraft] = useState([]);
@@ -45,7 +51,7 @@ export default function AdminMarkEntry() {
   };
 
   useEffect(() => {
-    academicsApi.allClassrooms().then(({ data }) => setClassrooms(data));
+    academicsApi.allClassrooms().then(({ data }) => setClassrooms(data.results ?? data));
   }, []);
 
   const years = useMemo(
@@ -72,13 +78,20 @@ export default function AdminMarkEntry() {
 
   const selectedClassroom = classrooms.find((c) => String(c.id) === String(classroomId));
 
+  const classroomOptionLabel = (c) => {
+    let label = `${c.stream_name} — ${c.academic_year_year}`;
+    if (c.is_promoted) label += ` — Promoted → ${c.promoted_to_label}`;
+    else label += ` — ${c.student_count} active`;
+    return year ? label : `${c.grade_level_name} ${label}`;
+  };
+
   useEffect(() => {
     setTermId("");
     setTerms([]);
     if (!selectedClassroom) return;
-    calendarApi.terms({ academic_year: selectedClassroom.academic_year }).then(({ data }) => {
-      setTerms(data.results ?? data);
-    });
+    calendarApi
+      .terms({ academic_year: selectedClassroom.academic_year, page_size: 100 })
+      .then(({ data }) => setTerms(data.results ?? data));
   }, [classroomId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -87,7 +100,7 @@ export default function AdminMarkEntry() {
     if (!selectedClassroom || !termId) return;
     setExamsLoading(true);
     examsApi
-      .exams({ grade_level: selectedClassroom.grade_level, term: termId })
+      .exams({ grade_level: selectedClassroom.grade_level, term: termId, page_size: 200 })
       .then(({ data }) => setExams(data.results ?? data))
       .finally(() => setExamsLoading(false));
   }, [termId, classroomId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -165,7 +178,6 @@ export default function AdminMarkEntry() {
   };
 
   // ---------- load ----------
-  // skipConfirm = true right after saving a paper setup (nothing unsaved at that point)
   const loadSheet = async (skipConfirm = false) => {
     if (!classroomId || !examId) return;
     if (!skipConfirm && dirtyKeys.length && !window.confirm("You have unsaved marks. Discard them and reload?")) {
@@ -194,9 +206,7 @@ export default function AdminMarkEntry() {
   const setCell = (key, val) => setValues((p) => ({ ...p, [key]: val }));
 
   // ==========================================================================
-  // DEV / TESTING ONLY - only rendered when running `vite dev`.
-  // Fills every EMPTY cell with a random mark client-side; nothing is sent to
-  // the server until "Save All Marks" is clicked.
+  // DEV / TESTING ONLY
   // ==========================================================================
   const seedDemoMarks = () => {
     if (!sheet) return;
@@ -277,7 +287,7 @@ export default function AdminMarkEntry() {
     const entries = [];
     dirtyKeys.forEach((k) => {
       const v = (values[k] ?? "").trim();
-      if (!v) return; // a cleared cell is simply skipped (marks can't be deleted from here)
+      if (!v) return;
       const [enrollmentId, subjectId, paper] = k.split(":");
       const col = colByKey[`${subjectId}:${paper}`];
       if (!col) return;
@@ -325,6 +335,7 @@ export default function AdminMarkEntry() {
         errs.length ? "warning" : "success"
       );
     } catch (err) {
+      // 207 responses are treated as success by axios; real failures land here
       notify(err.response?.data?.detail || "Could not save marks.", "danger");
     } finally {
       setSaving(false);
@@ -377,7 +388,7 @@ export default function AdminMarkEntry() {
         })),
       });
       setSetupOpen(false);
-      await loadSheet(true); // reload with the new columns
+      await loadSheet(true);
       notify("Paper setup saved.", "success");
     } catch (err) {
       notify(err.response?.data?.detail || "Could not save paper setup.", "danger");
@@ -387,6 +398,9 @@ export default function AdminMarkEntry() {
   };
 
   const canLoad = classroomId && examId && !loadingSheet;
+  const movedCount = sheet
+    ? sheet.students.filter((s) => s.enrollment_status && s.enrollment_status !== "ACTIVE").length
+    : 0;
 
   return (
     <div>
@@ -395,9 +409,10 @@ export default function AdminMarkEntry() {
           <div>
             <h1 className="page-title">Mark Entry — All Subjects</h1>
             <p className="page-subtitle mb-0">
-              Pick a class and exam, set how many papers each subject had and what each is out of, then
-              enter marks for every subject at once. Type <strong>A</strong> for absent, leave a cell empty
-              if the student didn't sit that paper, and paste a block straight from Excel.
+              Pick a class and exam (any year, including classes already promoted), set how many papers each
+              subject had and what each is out of, then enter marks for every subject at once. Type{" "}
+              <strong>A</strong> for absent, leave a cell empty if the student didn't sit that paper, and
+              paste a block straight from Excel.
             </p>
           </div>
         </div>
@@ -449,7 +464,7 @@ export default function AdminMarkEntry() {
               >
                 <option value="">Select...</option>
                 {classroomsForGrade.map((c) => (
-                  <option key={c.id} value={c.id}>{c.stream_name} — {c.student_count} active</option>
+                  <option key={c.id} value={c.id}>{classroomOptionLabel(c)}</option>
                 ))}
               </select>
             </div>
@@ -478,6 +493,16 @@ export default function AdminMarkEntry() {
               </select>
             </div>
           </div>
+
+          {selectedClassroom?.is_promoted && (
+            <div className="alert alert-info py-2 mt-3 mb-0">
+              <i className="bi bi-clock-history me-1"></i>
+              {selectedClassroom.grade_level_name} {selectedClassroom.stream_name} (
+              {selectedClassroom.academic_year_year}) was already promoted to{" "}
+              <strong>{selectedClassroom.promoted_to_label}</strong>. You can still enter or correct marks
+              for its {selectedClassroom.academic_year_year} exams — they stay in {selectedClassroom.academic_year_year}.
+            </div>
+          )}
 
           {termId && !examsLoading && exams.length === 0 && (
             <div className="form-text-hint mt-2">
@@ -545,7 +570,7 @@ export default function AdminMarkEntry() {
           <div className="empty-state">
             <i className="bi bi-person-x"></i>
             <h6>No students found</h6>
-            <p className="text-muted-soft">This class has no active students enrolled.</p>
+            <p className="text-muted-soft">No students were ever enrolled in this class.</p>
           </div>
         </div>
       )}
@@ -569,7 +594,9 @@ export default function AdminMarkEntry() {
                   <span className="dm-card__icon"><i className="bi bi-people"></i></span>
                 </div>
                 <div className="dm-card__num">{sheet.students.length}</div>
-                <div className="dm-card__sub">Active in this class</div>
+                <div className="dm-card__sub">
+                  {movedCount > 0 ? `${movedCount} since promoted / moved on` : "In this class"}
+                </div>
               </div>
               <div className="dm-card dm-card--warning">
                 <div className="dm-card__top">
@@ -698,6 +725,11 @@ export default function AdminMarkEntry() {
                   <i className="bi bi-grid-3x3 me-2 text-brand"></i>
                   {sheet.classroom} — {sheet.exam}
                   <span className="badge badge-neutral ms-2">{sheet.students.length}</span>
+                  {sheet.is_promoted && (
+                    <span className="badge badge-gold ms-2">
+                      Promoted → {sheet.promoted_to_label}
+                    </span>
+                  )}
                 </span>
                 <span className="chart-card__subtitle">
                   <i className="bi bi-check-circle me-1 text-success"></i>
@@ -767,6 +799,7 @@ export default function AdminMarkEntry() {
                   <tbody>
                     {sheet.students.map((s, r) => {
                       const st = rowStats(s.enrollment_id);
+                      const moved = s.enrollment_status && s.enrollment_status !== "ACTIVE";
                       return (
                         <tr key={s.enrollment_id}>
                           <td className="spreadsheet-td-sticky-1 cell-mono text-brand fw-semibold">
@@ -778,6 +811,15 @@ export default function AdminMarkEntry() {
                                 {(s.full_name || "").split(" ").filter(Boolean).slice(0, 2).map((n) => n[0]).join("") || "S"}
                               </div>
                               <span className="cell-name">{s.full_name}</span>
+                              {moved && (
+                                <span
+                                  className={`badge ${STATUS_BADGE[s.enrollment_status] || "badge-neutral"} ms-2`}
+                                  style={{ fontSize: "0.6rem" }}
+                                  title="Status of this student's enrollment in this class"
+                                >
+                                  {s.enrollment_status_display}
+                                </span>
+                              )}
                             </div>
                           </td>
 
@@ -789,10 +831,14 @@ export default function AdminMarkEntry() {
                             const dirty = v !== (original[k] ?? "");
                             const absent = isAbsentValue(v);
 
-                            let background;
-                            if (bad || serverErr) background = "var(--danger-100)";
-                            else if (absent) background = "var(--ink-100)";
-                            else if (dirty) background = "var(--gold-100)";
+                            const cls = [
+                              "spreadsheet-input",
+                              bad || serverErr ? "is-error" : "",
+                              !bad && !serverErr && absent ? "is-absent" : "",
+                              !bad && !serverErr && dirty ? "is-dirty" : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" ");
 
                             return (
                               <td key={k} className="spreadsheet-cell" title={serverErr || undefined}>
@@ -800,15 +846,10 @@ export default function AdminMarkEntry() {
                                   ref={(el) => (inputRefs.current[`${r}-${ci}`] = el)}
                                   type="text"
                                   inputMode="decimal"
-                                  className="form-control form-control-sm spreadsheet-input cell-mono"
-                                  style={{
-                                    background,
-                                    color: bad || serverErr ? "var(--danger-600)" : undefined,
-                                    fontWeight: dirty ? 600 : undefined,
-                                    textAlign: "center",
-                                  }}
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  className={cls}
                                   value={v}
-                                  placeholder={`0-${col.max}`}
                                   onChange={(e) => setCell(k, e.target.value)}
                                   onKeyDown={(e) => onKeyDown(e, r, ci)}
                                   onPaste={(e) => onPaste(e, r, ci)}
