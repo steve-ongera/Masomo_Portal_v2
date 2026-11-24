@@ -979,7 +979,7 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
         # Uses the same ledger as the student portal and finance pages:
         # balance = opening balance + term charges - payments.
         student_ids = [e.student_id for e in enrollments] + [e.student_id for e in left_enrollments]
-        ledger = services.get_ledger_totals_bulk(student_ids)
+        ledger = _fresh_ledger(student_ids)
 
         def fee_block(student_id):
             t = ledger.get(student_id)
@@ -1268,6 +1268,8 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
             .select_related("student__user")
             .order_by("student__user__first_name")
         )
+        enrollments = list(enrollments)
+        _ledger = _fresh_ledger([e.student_id for e in enrollments])
         students_data = [
             {
                 "enrollment_id": e.id,
@@ -1275,6 +1277,8 @@ class ClassRoomViewSet(utils.BlockDestructiveDeleteMixin, viewsets.ModelViewSet)
                 "full_name": e.student.user.get_full_name(),
                 "gender": e.student.get_gender_display(),
                 "curriculum_type": e.student.curriculum_type,
+                # additive: balance that will be carried into the new year
+                "balance": str((_ledger.get(e.student_id) or {}).get("balance", 0)),
             }
             for e in enrollments
         ]
@@ -1630,7 +1634,10 @@ class EnrollmentViewSet(viewsets.ModelViewSet):
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
-        return Response(serializers.EnrollmentSerializer(new_enrollment).data, status=201)
+        data = dict(serializers.EnrollmentSerializer(new_enrollment).data)
+        # The student's unpaid balance from the old year is now part of the new year's balance.
+        data["balance_carried_forward"] = float(getattr(new_enrollment, "carried_forward_balance", 0) or 0)
+        return Response(data, status=201)
 
     @action(detail=False, methods=["post"], permission_classes=[utils.IsAdminOrSecretary])
     def bulk_promote(self, request):
@@ -2422,6 +2429,24 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         return super().get_permissions()
 
+    def list(self, request, *args, **kwargs):
+        qs = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            ids = {inv.enrollment.student_id for inv in page}
+            if services.sync_invoice_chains(ids):
+                order = {inv.pk: i for i, inv in enumerate(page)}
+                page = sorted(qs.filter(pk__in=order.keys()), key=lambda inv: order[inv.pk])
+            return self.get_paginated_response(self.get_serializer(page, many=True).data)
+        _sync_invoice_students(qs)
+        return Response(self.get_serializer(self.filter_queryset(self.get_queryset()), many=True).data)
+
+    def retrieve(self, request, *args, **kwargs):
+        invoice = self.get_object()
+        services.sync_invoice_chains([invoice.enrollment.student_id])
+        invoice.refresh_from_db()
+        return Response(self.get_serializer(invoice).data)
+
     @action(detail=False, methods=["post"], permission_classes=[utils.IsSchoolOffice] )
     def generate(self, request):
         enrollment = generics.get_object_or_404(models.Enrollment, pk=request.data.get("enrollment_id"))
@@ -2510,6 +2535,8 @@ class PaymentViewSet(viewsets.ModelViewSet):
         "invoice__enrollment__student__admission_no",
         "invoice__enrollment__student__user__first_name",
         "invoice__enrollment__student__user__last_name",
+        "receipt_no",
+        "reference",
     ]
 
     def get_serializer_class(self):
@@ -3063,6 +3090,37 @@ class VerifyReceiptView(APIView):
         return Response({"valid": False, "detail": "No receipt found with this number."}, status=404)
 
 
+def _fresh_ledger(student_ids):
+    """
+    Re-syncs every invoice chain for these students (payments, brought-forward
+    balances, amount_due) and then returns the ledger. Every view that shows a
+    balance goes through this, so a number can never be stale or disagree with
+    another page.
+    """
+    student_ids = list(student_ids)
+    services.sync_invoice_chains(student_ids)
+    return services.get_ledger_totals_bulk(student_ids)
+
+
+def _money_rows(invoices_qs, extra_fields=()):
+    """Per-invoice rows that never double-count arrears (see services.invoice_money_rows)."""
+    return services.invoice_money_rows(invoices_qs, extra_fields)
+
+
+def _month_key(dt):
+    if dt is None:
+        return None
+    if timezone.is_aware(dt):
+        dt = timezone.localtime(dt)
+    return dt.strftime("%Y-%m")
+
+
+def _sync_invoice_students(invoices_qs):
+    ids = set(invoices_qs.values_list("enrollment__student_id", flat=True).distinct())
+    if ids:
+        services.sync_invoice_chains(ids)
+
+
 def _months_back(n):
     """Return the first-of-month date for each of the last n months, oldest first."""
     today = date.today()
@@ -3127,10 +3185,15 @@ class DashboardStatsView(APIView):
             invoice__enrollment__academic_year=current_year
         ).aggregate(total=Sum("amount"))["total"] or 0
 
-        fee_totals = models.Invoice.objects.filter(enrollment__academic_year=current_year).aggregate(
-            due=Sum("amount_due"), paid=Sum("amount_paid")
+        # School-wide money owed = every student's positive ledger balance
+        # (current-year charges PLUS balances carried from earlier years).
+        all_student_ids = list(
+            models.Invoice.objects.values_list("enrollment__student_id", flat=True).distinct()
         )
-        outstanding_balance = (fee_totals["due"] or 0) - (fee_totals["paid"] or 0)
+        _ledger = _fresh_ledger(all_student_ids)
+        outstanding_balance = sum(
+            (t["balance"] for t in _ledger.values() if t["balance"] > 0), Decimal("0")
+        )
 
         stat_cards = {
             "total_students": total_students,
@@ -3229,19 +3292,21 @@ class ReportsOverviewView(APIView):
         current_year = models.AcademicYear.objects.filter(is_current=True).first()
         current_term = models.Term.objects.filter(is_current=True).first()
 
-        fee_rows = (
-            models.Invoice.objects.filter(enrollment__academic_year=current_year)
-            .values("fee_structure__grade_level__name")
-            .annotate(due=Sum("amount_due"), paid=Sum("amount_paid"))
-        )
+        year_invoices = models.Invoice.objects.filter(enrollment__academic_year=current_year)
+        _sync_invoice_students(year_invoices)
+        by_grade = {}
+        for r in _money_rows(year_invoices, ("fee_structure__grade_level__name",)):
+            b = by_grade.setdefault(r["fee_structure__grade_level__name"], [Decimal("0"), Decimal("0")])
+            b[0] += r["due"]
+            b[1] += r["paid"]
         fee_collection = [
             {
-                "grade": r["fee_structure__grade_level__name"],
-                "due": float(r["due"] or 0),
-                "paid": float(r["paid"] or 0),
-                "collection_rate": round(float(r["paid"] or 0) / float(r["due"]) * 100, 1) if r["due"] else 0,
+                "grade": g,
+                "due": float(due),
+                "paid": float(paid),
+                "collection_rate": round(float(paid) / float(due) * 100, 1) if due else 0,
             }
-            for r in fee_rows
+            for g, (due, paid) in by_grade.items()
         ]
 
         curriculum_rows = (
@@ -3370,12 +3435,17 @@ class StudentFeeStatusView(APIView):
             enrollment=enrollment, fee_structure=fee_structure
         ).first()
 
+        t = _fresh_ledger([student.id]).get(student.id)
+        if invoice is not None:
+            invoice.refresh_from_db()
         return Response({
             "has_fee_structure": True,
             "invoice_generated": invoice is not None,
             "grade": grade_level.name,
             "term": str(current_term),
             "invoice_id": invoice.id if invoice else None,
+            "balance": str(t["balance"]) if t else "0",
+            "previous_balance": str(invoice.brought_forward) if invoice else "0",
         })
 
 
@@ -3559,12 +3629,12 @@ class FinanceCollectionsReportView(APIView):
 
         total_collected = models.Payment.objects.aggregate(total=Sum("amount"))["total"] or 0
 
-        invoice_balances = models.Invoice.objects.annotate(
-            balance=ExpressionWrapper(F("amount_due") - F("amount_paid"), output_field=FloatField())
-        )
-        outstanding_balance = (
-            invoice_balances.filter(balance__gt=0).aggregate(total=Sum("balance"))["total"] or 0
-        )
+        # Keep every invoice chain up to date, then total the students' LIVE
+        # balances (arrears from earlier years included, nothing double-counted).
+        _all_ids = list(models.Invoice.objects.values_list("enrollment__student_id", flat=True).distinct())
+        _ledger = _fresh_ledger(_all_ids)
+        outstanding_balance = sum((t["balance"] for t in _ledger.values() if t["balance"] > 0), Decimal("0"))
+        invoice_balances = models.Invoice.objects.all()
         fully_paid_count = invoice_balances.filter(amount_paid__gte=F("amount_due")).count()
         partially_paid_count = invoice_balances.filter(
             amount_paid__gt=0, amount_paid__lt=F("amount_due")
@@ -3650,43 +3720,50 @@ class FinanceClassAnalysisReportView(APIView):
             )
 
         year_invoices = models.Invoice.objects.filter(enrollment__academic_year=academic_year)
-
-        raw_classrooms = (
-            year_invoices.values(
+        _sync_invoice_students(year_invoices)
+        money = _money_rows(
+            year_invoices,
+            (
                 "enrollment__classroom__id",
                 "enrollment__classroom__grade_level__name",
                 "enrollment__classroom__stream__name",
-            )
-            .annotate(due=Sum("amount_due"), paid=Sum("amount_paid"))
+                "enrollment__student__gender",
+                "issued_at",
+            ),
         )
-        classroom_outstanding = []
-        for r in raw_classrooms:
-            due = float(r["due"] or 0)
-            paid = float(r["paid"] or 0)
-            classroom_outstanding.append(
+
+        # due = this year's own charges + the balance carried IN from earlier years
+        class_totals = {}
+        for r in money:
+            c = class_totals.setdefault(
+                r["enrollment__classroom__id"],
                 {
-                    "classroom_id": r["enrollment__classroom__id"],
-                    "classroom": f'{r["enrollment__classroom__grade_level__name"]} {r["enrollment__classroom__stream__name"]}',
-                    "due": due,
-                    "paid": paid,
-                    "outstanding": due - paid,
-                }
+                    "name": f'{r["enrollment__classroom__grade_level__name"]} {r["enrollment__classroom__stream__name"]}',
+                    "due": Decimal("0"), "paid": Decimal("0"),
+                },
             )
+            c["due"] += r["due"]
+            c["paid"] += r["paid"]
+        classroom_outstanding = [
+            {
+                "classroom_id": cid,
+                "classroom": c["name"],
+                "due": float(c["due"]),
+                "paid": float(c["paid"]),
+                "outstanding": float(c["due"] - c["paid"]),
+            }
+            for cid, c in class_totals.items()
+        ]
         classroom_outstanding.sort(key=lambda c: c["outstanding"], reverse=True)
 
         months = _months_in_range(academic_year.start_date, academic_year.end_date)
         month_labels = [d.strftime("%b") for d in months]
 
         due_by_month, count_by_month, paid_by_month = {}, {}, {}
-        raw_invoice_months = (
-            year_invoices.annotate(month=TruncMonth("issued_at"))
-            .values("month")
-            .annotate(due=Sum("amount_due"), cnt=Count("id"))
-        )
-        for r in raw_invoice_months:
-            key = r["month"].strftime("%Y-%m")
-            due_by_month[key] = float(r["due"] or 0)
-            count_by_month[key] = r["cnt"]
+        for r in money:
+            key = _month_key(r["issued_at"])
+            due_by_month[key] = due_by_month.get(key, 0) + float(r["due"])
+            count_by_month[key] = count_by_month.get(key, 0) + 1
 
         raw_payment_months = (
             models.Payment.objects.filter(invoice__enrollment__academic_year=academic_year)
@@ -3730,24 +3807,25 @@ class FinanceClassAnalysisReportView(APIView):
             for r in raw_methods
         ]
 
-        gender_rows = (
-            year_invoices.values("enrollment__student__gender")
-            .annotate(due=Sum("amount_due"), paid=Sum("amount_paid"), invoice_count=Count("id"))
-        )
         gender_labels = dict(models.StudentProfile.Gender.choices)
+        gender_acc = {}
+        for r in money:
+            g = r["enrollment__student__gender"]
+            acc = gender_acc.setdefault(g, {"due": 0.0, "paid": 0.0, "n": 0})
+            acc["due"] += float(r["due"])
+            acc["paid"] += float(r["paid"])
+            acc["n"] += 1
         gender_balance_analysis = {}
-        for r in gender_rows:
-            due = float(r["due"] or 0)
-            paid = float(r["paid"] or 0)
-            outstanding = due - paid
-            key = "male" if r["enrollment__student__gender"] == models.StudentProfile.Gender.MALE else "female"
+        for g, acc in gender_acc.items():
+            outstanding = acc["due"] - acc["paid"]
+            key = "male" if g == models.StudentProfile.Gender.MALE else "female"
             gender_balance_analysis[key] = {
-                "label": gender_labels.get(r["enrollment__student__gender"], key),
-                "total_due": due,
-                "total_paid": paid,
+                "label": gender_labels.get(g, key),
+                "total_due": acc["due"],
+                "total_paid": acc["paid"],
                 "total_outstanding": outstanding,
-                "average_outstanding": round(outstanding / r["invoice_count"], 2) if r["invoice_count"] else 0,
-                "invoice_count": r["invoice_count"],
+                "average_outstanding": round(outstanding / acc["n"], 2) if acc["n"] else 0,
+                "invoice_count": acc["n"],
             }
 
         return Response(
@@ -3794,6 +3872,7 @@ class FinanceDetailedReportView(APIView):
         )
         if academic_year:
             qs = qs.filter(enrollment__academic_year=academic_year)
+        _sync_invoice_students(qs)
 
         term_id = request.query_params.get("term")
         if term_id:
@@ -3821,25 +3900,27 @@ class FinanceDetailedReportView(APIView):
 
         qs = qs.order_by("-issued_at")
 
-        totals = qs.aggregate(total_due=Sum("amount_due"), total_paid=Sum("amount_paid"))
-        total_due = float(totals["total_due"] or 0)
-        total_paid = float(totals["total_paid"] or 0)
+        # Totals never double-count arrears that were carried from term to term.
+        _rows = _money_rows(qs)
+        total_due = float(sum((r["due"] for r in _rows), Decimal("0")))
+        total_paid = float(sum((r["paid"] for r in _rows), Decimal("0")))
 
         term_summary = []
         if academic_year:
             term_number_labels = dict(models.Term.TermNumber.choices)
-            term_rows = (
-                models.Invoice.objects.filter(enrollment__academic_year=academic_year)
-                .values("fee_structure__term__term_number")
-                .annotate(due=Sum("amount_due"), paid=Sum("amount_paid"))
-                .order_by("fee_structure__term__term_number")
-            )
-            for r in term_rows:
-                due = float(r["due"] or 0)
-                paid = float(r["paid"] or 0)
+            term_acc = {}
+            for r in _money_rows(
+                models.Invoice.objects.filter(enrollment__academic_year=academic_year),
+                ("fee_structure__term__term_number",),
+            ):
+                acc = term_acc.setdefault(r["fee_structure__term__term_number"], [0.0, 0.0])
+                acc[0] += float(r["due"])
+                acc[1] += float(r["paid"])
+            for number in sorted(k for k in term_acc if k is not None):
+                due, paid = term_acc[number]
                 term_summary.append(
                     {
-                        "term": term_number_labels.get(r["fee_structure__term__term_number"], "-"),
+                        "term": term_number_labels.get(number, "-"),
                         "due": due,
                         "paid": paid,
                         "outstanding": due - paid,
@@ -3851,27 +3932,29 @@ class FinanceDetailedReportView(APIView):
             if academic_year
             else models.Invoice.objects.all()
         )
-        raw_debtors = debtor_qs.values(
-            "enrollment__student__admission_no",
-            "enrollment__student__user__first_name",
-            "enrollment__student__user__last_name",
-            "enrollment__classroom__grade_level__name",
-            "enrollment__classroom__stream__name",
-        ).annotate(due=Sum("amount_due"), paid=Sum("amount_paid"))
-
-        top_debtors = sorted(
+        debtor_acc = {}
+        for r in _money_rows(
+            debtor_qs,
             (
+                "enrollment__student__admission_no",
+                "enrollment__student__user__first_name",
+                "enrollment__student__user__last_name",
+                "enrollment__classroom__grade_level__name",
+                "enrollment__classroom__stream__name",
+            ),
+        ):
+            d = debtor_acc.setdefault(
+                r["enrollment__student_id"],
                 {
                     "admission_no": r["enrollment__student__admission_no"],
                     "name": f'{r["enrollment__student__user__first_name"]} {r["enrollment__student__user__last_name"]}',
                     "classroom": f'{r["enrollment__classroom__grade_level__name"]} {r["enrollment__classroom__stream__name"]}',
-                    "outstanding": float(r["due"] or 0) - float(r["paid"] or 0),
-                }
-                for r in raw_debtors
-            ),
-            key=lambda d: d["outstanding"],
-            reverse=True,
-        )
+                    "outstanding": 0.0,
+                },
+            )
+            d["outstanding"] += float(r["outstanding"])
+
+        top_debtors = sorted(debtor_acc.values(), key=lambda d: d["outstanding"], reverse=True)
         top_debtors = [d for d in top_debtors if d["outstanding"] > 0][:10]
 
         paginator = self.pagination_class()
@@ -3973,7 +4056,7 @@ class FinanceStudentBalancesReportView(APIView):
             )
 
         students = list(students)
-        ledger = services.get_ledger_totals_bulk([s.id for s in students])
+        ledger = _fresh_ledger([s.id for s in students])
 
         rows = []
         for s in students:
@@ -4906,7 +4989,7 @@ class ClassGatepassCardsView(APIView):
             .select_related("student__user")
             .order_by("student__user__first_name", "student__user__last_name")
         )
-        ledger = services.get_ledger_totals_bulk([e.student_id for e in enrollments])
+        ledger = _fresh_ledger([e.student_id for e in enrollments])
         term = models.Term.objects.filter(is_current=True).first()
 
         cards = []

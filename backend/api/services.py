@@ -1,6 +1,19 @@
 """
 Service layer - business rules live here, NOT in views/serializers.
 Views should stay thin: parse request -> call a service -> return response.
+
+BALANCE RULES (single source of truth)
+--------------------------------------
+* get_ledger_totals_bulk()  - the ONE place that computes a student's money:
+      balance = opening + charged - paid   (positive = owes, negative = credit)
+* sync_invoice_chains()     - repairs every invoice's brought_forward /
+  amount_due / amount_paid so the invoice-level figures always agree with the
+  ledger. Called before any page/report that shows balances.
+* carry_forward_balance()   - called whenever a student is promoted / moved to
+  a new academic year: makes sure the previous year's unpaid balance is
+  carried into the new year's invoice(s).
+* invoice_money_rows()      - report helper that avoids DOUBLE-COUNTING the
+  brought_forward amount when invoices of several terms are summed.
 """
 import base64
 import io
@@ -977,6 +990,11 @@ def promote_student(enrollment: models.Enrollment, target_classroom: models.Clas
     Creates a new Enrollment for the next academic year, linked back to the
     old one via promoted_from. The OLD enrollment (and every ExamResult /
     Invoice FK'd to it) is left completely untouched.
+
+    FEES: whatever the student still owes (or has prepaid) at the moment of
+    promotion is carried into the new year automatically - see
+    carry_forward_balance(). The promoted enrollment gets a
+    `carried_forward_balance` attribute (Decimal) for the caller to report.
     """
     rule = getattr(enrollment.classroom.grade_level, "promotion_rule", None)
     if rule and not force and stages.ranking_enabled(enrollment.classroom.grade_level):
@@ -990,6 +1008,9 @@ def promote_student(enrollment: models.Enrollment, target_classroom: models.Clas
                 "Pass force=True to override."
             )
 
+    # Bring the old year's invoices fully up to date BEFORE moving the student on.
+    sync_invoice_chains([enrollment.student_id])
+
     enrollment.status = models.Enrollment.Status.PROMOTED
     enrollment.save(update_fields=["status"])
 
@@ -1000,17 +1021,25 @@ def promote_student(enrollment: models.Enrollment, target_classroom: models.Clas
         status=models.Enrollment.Status.ACTIVE,
         promoted_from=enrollment,
     )
+    new_enrollment.carried_forward_balance = carry_forward_balance(new_enrollment)
     return new_enrollment
 
 
 def bulk_promote_classroom(classroom: models.ClassRoom, target_classroom: models.ClassRoom, force: bool = False):
     results = {"promoted": [], "failed": []}
+    promoted_student_ids = []
     for enrollment in classroom.enrollments.filter(status=models.Enrollment.Status.ACTIVE):
         try:
             new_e = promote_student(enrollment, target_classroom, force=force)
             results["promoted"].append(new_e.id)
+            promoted_student_ids.append(new_e.student_id)
         except ValueError as exc:
             results["failed"].append({"student": enrollment.student.admission_no, "reason": str(exc)})
+
+    ledger = get_ledger_totals_bulk(promoted_student_ids) if promoted_student_ids else {}
+    results["balance_carried_forward"] = float(
+        sum((t["balance"] for t in ledger.values() if t["balance"] > 0), Decimal("0"))
+    )
     return results
 
 
@@ -1104,7 +1133,7 @@ def bulk_promote_classroom_auto(source_classroom: models.ClassRoom, force: bool 
         return {"promoted": [], "failed": [], "graduated_count": count, "target_classroom": None}
 
     target_classroom = get_or_create_next_classroom(source_classroom)
-    results = bulk_promote_classroom(source_classroom, target_classroom, force=force)  # existing function, unchanged
+    results = bulk_promote_classroom(source_classroom, target_classroom, force=force)
 
     models.ClassroomPromotion.objects.create(
         source_classroom=source_classroom,
@@ -1119,7 +1148,7 @@ def bulk_promote_classroom_auto(source_classroom: models.ClassRoom, force: bool 
 
 
 # ---------------------------------------------------------------------------
-# FEES - carry-forward ledger, STK push (with DEBUG bypass), receipts
+# FEES - carry-forward ledger, invoice-chain sync, STK push, receipts
 # ---------------------------------------------------------------------------
 def get_ledger_totals_bulk(student_ids):
     """
@@ -1179,20 +1208,192 @@ def get_outstanding_balance(student: models.StudentProfile) -> Decimal:
     prepaid credit. Uses get_ledger_totals_bulk so it always agrees with
     the finance reports and the invoice pages.
     """
+    sync_invoice_chains([student.id])
     t = get_ledger_totals_bulk([student.id]).get(student.id)
     return t["balance"] if t else Decimal("0")
+
+
+def get_total_outstanding_balance(student_ids=None) -> Decimal:
+    """
+    School-wide money still owed = sum of every student's POSITIVE ledger
+    balance (credits are not netted against other students' debts).
+    Counts alumni too, because alumni balances are real money owed.
+    Pass student_ids to restrict it to a set of students.
+    """
+    if student_ids is None:
+        student_ids = set(
+            models.Invoice.objects.values_list("enrollment__student_id", flat=True).distinct()
+        )
+    ledger = get_ledger_totals_bulk(student_ids)
+    return sum((t["balance"] for t in ledger.values() if t["balance"] > 0), Decimal("0"))
+
+
+def sync_invoice_chains(student_ids=None) -> int:
+    """
+    Makes every invoice's stored figures agree with reality, in memory and
+    with ONE bulk write. Safe to call often - it only writes rows that are
+    actually wrong. Fixes, per student, oldest invoice first:
+
+      1. amount_paid  = sum of that invoice's Payment rows
+                        (catches payments edited/added outside record_payment)
+      2. brought_forward = balance rolled in from the previous invoice
+                        (the EARLIEST invoice keeps its own brought_forward:
+                         that is the genuine opening balance)
+      3. amount_due   = this term's own charge + brought_forward
+                        (the term's own charge is preserved, so per-student
+                         fee overrides survive)
+
+    Pass student_ids=None to sync everybody. Returns how many invoices changed.
+    """
+    qs = (
+        models.Invoice.objects.select_related("enrollment", "fee_structure__term")
+        .order_by(
+            "enrollment__student_id",
+            "fee_structure__term__academic_year__year",
+            "fee_structure__term__term_number",
+            "id",
+        )
+    )
+    if student_ids is not None:
+        student_ids = list(student_ids)
+        if not student_ids:
+            return 0
+        qs = qs.filter(enrollment__student_id__in=student_ids)
+
+    invoices = list(qs)
+    if not invoices:
+        return 0
+
+    paid_by_invoice = {
+        row["invoice_id"]: row["total"] or Decimal("0")
+        for row in models.Payment.objects.filter(invoice_id__in=[i.id for i in invoices])
+        .values("invoice_id").annotate(total=Sum("amount"))
+    }
+
+    changed = []
+    current_student, running = None, Decimal("0")
+    for inv in invoices:
+        sid = inv.enrollment.student_id
+        is_first = sid != current_student
+        if is_first:
+            current_student = sid
+            running = inv.brought_forward  # genuine opening balance (arrears / credit)
+
+        own_charge = inv.amount_due - inv.brought_forward
+        correct_bf = running
+        correct_due = own_charge + correct_bf
+        correct_paid = paid_by_invoice.get(inv.id, Decimal("0"))
+
+        if (
+            inv.brought_forward != correct_bf
+            or inv.amount_due != correct_due
+            or inv.amount_paid != correct_paid
+        ):
+            inv.brought_forward = correct_bf
+            inv.amount_due = correct_due
+            inv.amount_paid = correct_paid
+            changed.append(inv)
+
+        running = correct_due - correct_paid
+
+    if changed:
+        models.Invoice.objects.bulk_update(changed, ["brought_forward", "amount_due", "amount_paid"])
+    return len(changed)
+
+
+def invoice_money_rows(invoices_qs, extra_fields=()):
+    """
+    REPORT HELPER - avoids double-counting.
+
+    Every invoice's amount_due already CONTAINS the balance brought in from
+    earlier terms, so summing amount_due across several terms counts the
+    same arrears again and again. This returns one dict per invoice with:
+
+        charged    = this term's own fee            (amount_due - brought_forward)
+        carried_in = balance entering the SET       (brought_forward of the
+                     student's first invoice in `invoices_qs`, 0 for the rest)
+        due        = charged + carried_in
+        paid       = amount_paid
+        outstanding= due - paid
+
+    so sum(due) - sum(paid) over any set of consecutive invoices equals the
+    student's true balance at the end of that set. Add `extra_fields`
+    (ORM lookups) to carry classroom / gender / month info along.
+    """
+    base = ("id", "enrollment__student_id", "brought_forward", "amount_due", "amount_paid")
+    qs = invoices_qs.order_by(
+        "enrollment__student_id",
+        "fee_structure__term__academic_year__year",
+        "fee_structure__term__term_number",
+        "id",
+    ).values(*base, *extra_fields)
+
+    rows, seen = [], set()
+    for r in qs:
+        sid = r["enrollment__student_id"]
+        charged = r["amount_due"] - r["brought_forward"]
+        carried = Decimal("0") if sid in seen else r["brought_forward"]
+        seen.add(sid)
+        r["charged"] = charged
+        r["carried_in"] = carried
+        r["due"] = charged + carried
+        r["paid"] = r["amount_paid"]
+        r["outstanding"] = r["due"] - r["paid"]
+        rows.append(r)
+    return rows
+
+
+def carry_forward_balance(enrollment: models.Enrollment) -> Decimal:
+    """
+    Called when a student moves into a new academic year (promotion,
+    repeating a year...). Guarantees the PREVIOUS balance is added to the
+    new year:
+
+      * brings all existing invoices up to date,
+      * generates invoices for every term of the new year that has already
+        started (each one folds the running balance into brought_forward),
+      * if the new year's terms haven't started yet, nothing is lost: the
+        balance simply stays on the last invoice and is picked up by the
+        first invoice generated later (generate_invoice / daily job).
+
+    A missing FeeStructure never blocks promotion; it raises the usual
+    FeeStructureMissingAlert instead. Returns the student's balance now
+    (positive = owes, negative = prepaid credit).
+    """
+    student = enrollment.student
+    sync_invoice_chains([student.id])
+
+    today = timezone.localdate()
+    terms = models.Term.objects.filter(
+        academic_year=enrollment.academic_year, start_date__lte=today
+    ).order_by("term_number")
+    for term in terms:
+        try:
+            generate_invoice(enrollment, term)
+        except ValueError:
+            _record_missing_fee_structure(enrollment.classroom.grade_level, term)
+
+    sync_invoice_chains([student.id])
+    return get_outstanding_balance(student)
 
 
 def generate_invoice(enrollment: models.Enrollment, term: models.Term) -> models.Invoice:
     """
     Creates this term's invoice, automatically folding in whatever the
-    student's running balance was from ALL previous terms:
+    student's running balance was from ALL EARLIER terms (including earlier
+    academic years):
       - Unpaid arrears (positive balance) get ADDED to this term's fee.
       - A credit/prepaid balance (negative, from an earlier overpayment)
-        gets SUBTRACTED from this term's fee - "pushed to next term
-        automatically when it's active", exactly as requested.
+        gets SUBTRACTED from this term's fee.
+
+    The carried balance is taken from the invoice immediately BEFORE this
+    term, not from the student's grand total, so back-filling an older term
+    can never pull a later term's charges into it. If this becomes the
+    student's earliest invoice, it inherits the opening balance. The whole
+    chain is re-synced afterwards, so later invoices stay correct.
+
     Calling this twice for the same enrollment/fee_structure is safe - it
-    just returns the existing invoice rather than recomputing brought_forward.
+    just returns the existing invoice.
     """
     fee_structure = models.FeeStructure.objects.filter(
         grade_level=enrollment.classroom.grade_level, term=term
@@ -1204,13 +1405,37 @@ def generate_invoice(enrollment: models.Enrollment, term: models.Term) -> models
     if existing:
         return existing
 
-    brought_forward = get_outstanding_balance(enrollment.student)
+    student = enrollment.student
+    sync_invoice_chains([student.id])  # make sure the balance we carry is current
+
+    def key(inv):
+        t = inv.fee_structure.term
+        return (t.academic_year.year, t.term_number)
+
+    all_invoices = list(
+        models.Invoice.objects.filter(enrollment__student=student)
+        .select_related("fee_structure__term__academic_year")
+    )
+    this_key = (term.academic_year.year, term.term_number)
+    prior = sorted((i for i in all_invoices if key(i) < this_key), key=lambda i: (key(i), i.id))
+    later = sorted((i for i in all_invoices if key(i) > this_key), key=lambda i: (key(i), i.id))
+
+    if prior:
+        last = prior[-1]
+        brought_forward = last.amount_due - last.amount_paid
+    elif later:
+        brought_forward = later[0].brought_forward  # opening balance moves to the new earliest invoice
+    else:
+        brought_forward = Decimal("0")
+
     invoice = models.Invoice.objects.create(
         enrollment=enrollment,
         fee_structure=fee_structure,
         brought_forward=brought_forward,
         amount_due=fee_structure.total_amount + brought_forward,
     )
+    sync_invoice_chains([student.id])
+    invoice.refresh_from_db()
     return invoice
 
 
@@ -1238,47 +1463,23 @@ def generate_receipt_no() -> str:
 
 def recalculate_student_invoice_chain(student: models.StudentProfile):
     """
-    Walks every invoice for `student`, oldest term first, and recomputes
-    brought_forward / amount_due from ACTUAL payments made so far -
-    never trusting the stale snapshot Invoice.brought_forward normally
-    holds.
-
-    Two things are deliberately PRESERVED (both were silently destroyed
-    by the old version):
-      1. The OPENING balance: the earliest invoice's brought_forward is
-         genuine arrears/credit from before the system existed, so the
-         running balance starts from it instead of 0.
-      2. Each invoice's own term charge (amount_due - brought_forward),
-         instead of re-reading FeeStructure.total_amount, so per-student
-         fee overrides (e.g. a mid-term joiner on a reduced fee) survive.
-
-    Call this after EVERY payment - see record_payment().
+    Recomputes brought_forward / amount_due / amount_paid for ONE student's
+    whole invoice chain (see sync_invoice_chains for exactly what is fixed
+    and what is preserved). Kept as a thin wrapper so every existing caller
+    keeps working. Returns the ids of the invoices that changed.
     """
-    invoices = list(
-        models.Invoice.objects.filter(enrollment__student=student)
-        .select_related("fee_structure")
-        .order_by("fee_structure__term__academic_year__year", "fee_structure__term__term_number", "id")
-    )
-
-    running_balance = invoices[0].brought_forward if invoices else Decimal("0")  # opening balance
-    changed_ids = []
-
-    for invoice in invoices:
-        own_charge = invoice.amount_due - invoice.brought_forward  # stored term charge (overrides survive)
-        correct_brought_forward = running_balance
-        correct_amount_due = own_charge + correct_brought_forward
-
-        if invoice.brought_forward != correct_brought_forward or invoice.amount_due != correct_amount_due:
-            invoice.brought_forward = correct_brought_forward
-            invoice.amount_due = correct_amount_due
-            invoice.save(update_fields=["brought_forward", "amount_due"])
-            changed_ids.append(invoice.id)
-
-        # What carries into the NEXT invoice: this invoice's own balance
-        # (negative = this invoice is itself in credit).
-        running_balance = correct_amount_due - invoice.amount_paid
-
-    return changed_ids
+    before = {
+        i["id"]: (i["brought_forward"], i["amount_due"], i["amount_paid"])
+        for i in models.Invoice.objects.filter(enrollment__student=student)
+        .values("id", "brought_forward", "amount_due", "amount_paid")
+    }
+    sync_invoice_chains([student.id])
+    after = {
+        i["id"]: (i["brought_forward"], i["amount_due"], i["amount_paid"])
+        for i in models.Invoice.objects.filter(enrollment__student=student)
+        .values("id", "brought_forward", "amount_due", "amount_paid")
+    }
+    return [iid for iid, vals in after.items() if before.get(iid) != vals]
 
 
 def record_payment(invoice: models.Invoice, amount: Decimal, method: str, reference: str, recorded_by):
@@ -1442,6 +1643,7 @@ def record_bulk_payment(student: models.StudentProfile, amount: Decimal, method:
     if amount <= 0:
         raise ValueError("Payment amount must be greater than zero.")
 
+    sync_invoice_chains([student.id])
     remaining = Decimal(amount)
     payments = []
 
@@ -1542,6 +1744,9 @@ def generate_invoices_for_term(term: "models.Term", enrollments=None) -> dict:
     counted and rolled into a FeeStructureMissingAlert instead of raising
     - one bad/missing fee structure never blocks the other grades from
     being invoiced in the same run.
+
+    Every new invoice carries the student's previous balance (including from
+    earlier academic years) via generate_invoice().
     """
     if enrollments is None:
         enrollments = models.Enrollment.objects.filter(
@@ -1607,10 +1812,13 @@ def run_daily_invoice_generation() -> dict:
       - A grade with no FeeStructure yet doesn't block anything else;
         it's flagged via FeeStructureMissingAlert and simply picked up
         automatically once ICT/Finance adds the missing FeeStructure.
+      - Finally every student's invoice chain is re-synced so the
+        brought_forward / amount_due / amount_paid figures on all
+        invoices are current (previous-year balances included).
 
-    Deliberately scoped to the CURRENT academic year only - a past
-    cohort's invoices are historical records and are never touched or
-    regenerated by this job.
+    Deliberately scoped to the CURRENT academic year only for GENERATING
+    invoices - a past cohort's invoices are historical records and are never
+    regenerated by this job (their figures are only re-synced).
     """
     current_year = models.AcademicYear.objects.filter(is_current=True).first()
     if not current_year:
@@ -1628,10 +1836,12 @@ def run_daily_invoice_generation() -> dict:
     ).select_related("classroom__grade_level", "student__user")
 
     results = [generate_invoices_for_term(term, active_enrollments) for term in terms]
+    synced = sync_invoice_chains()
 
     return {
         "academic_year": current_year.year,
         "terms_processed": len(results),
+        "invoices_resynced": synced,
         "results": results,
     }
 
@@ -1895,6 +2105,8 @@ def _personalize_fee_body(communication, user, primary_student):
 
     if not students:
         return communication.body
+
+    sync_invoice_chains([s.id for s in students])  # reminders must quote the up-to-date balance
 
     lines = [communication.body, ""]
     for student in students:
@@ -2635,6 +2847,7 @@ def get_student_clearance_state(student: models.StudentProfile) -> dict:
         .first()
     )
     enrollment = info["enrollment"]
+    sync_invoice_chains([student.id])
     balance = get_outstanding_balance(student)  # positive = owes, negative = prepaid
 
     return {
@@ -2665,6 +2878,7 @@ def submit_clearance_application(student: models.StudentProfile, remarks: str = 
     if existing and existing.status == Status.CLEARED:
         raise ValueError("You have already been cleared.")
 
+    sync_invoice_chains([student.id])
     balance = get_outstanding_balance(student)
 
     if existing:  # re-applying after being marked Not Cleared
@@ -2709,6 +2923,7 @@ def review_clearance(application, reviewer, decision: str, remarks: str = "", fo
         raise ValueError("Only pending applications can be reviewed.")
 
     remarks = (remarks or "").strip()
+    sync_invoice_chains([application.student_id])
     balance = get_outstanding_balance(application.student)
 
     if decision == "CLEAR":
@@ -2817,6 +3032,7 @@ def record_finance_payment(student, amount, method, reference, recorded_by):
     if amount <= 0:
         raise ValueError("Payment amount must be greater than zero.")
 
+    sync_invoice_chains([student.id])  # allocate against up-to-date balances
     receipt_no = generate_receipt_no()  # once for the whole payment
     remaining = amount
     payments = []
@@ -3043,12 +3259,14 @@ def _auto_promote_classroom(classroom, cfg, final_term):
         "promoted": 0, "graduated": 0,
         "repeating": [], "held": [],
         "target": None, "target_year": None,
+        "balance_carried_forward": 0.0,
     }
 
     info = resolve_next_classroom_target(classroom)       # ValueError if next year isn't set up yet
 
     if info["graduating"]:
         out["target"] = "Graduation"
+        sync_invoice_chains([e.student_id for e in active])   # leavers' balances stay accurate
         models.Enrollment.objects.filter(pk__in=[e.pk for e in active]).update(status=Status.GRADUATED)
         out["graduated"] = len(active)
         models.ClassroomPromotion.objects.create(
@@ -3063,29 +3281,40 @@ def _auto_promote_classroom(classroom, cfg, final_term):
     out["target"] = str(target)
     out["target_year"] = target.academic_year.year
     repeat_room = None
+    moved_student_ids = []
 
     for enrollment in active:
         decision, reason = _promotion_decision(enrollment, cfg, final_term)
         who = {"admission_no": enrollment.student.admission_no,
                "name": enrollment.student.user.get_full_name(), "reason": reason}
         if decision == "PROMOTE":
-            promote_student(enrollment, target, force=True)
+            promote_student(enrollment, target, force=True)   # carries the balance forward
             out["promoted"] += 1
+            moved_student_ids.append(enrollment.student_id)
         elif decision == "REPEAT":
             if repeat_room is None:
                 repeat_room, _ = models.ClassRoom.objects.get_or_create(
                     grade_level=classroom.grade_level, stream=classroom.stream,
                     academic_year=target.academic_year,
                 )
+            sync_invoice_chains([enrollment.student_id])
             enrollment.status = Status.REPEATED
             enrollment.save(update_fields=["status"])
-            models.Enrollment.objects.create(
+            repeat_enrollment = models.Enrollment.objects.create(
                 student=enrollment.student, classroom=repeat_room, academic_year=repeat_room.academic_year,
                 status=Status.ACTIVE, promoted_from=enrollment, remarks=f"Repeating: {reason}",
             )
+            carry_forward_balance(repeat_enrollment)          # repeaters keep their balance too
             out["repeating"].append(who)
+            moved_student_ids.append(enrollment.student_id)
         else:
             out["held"].append(who)        # stays ACTIVE - handle by hand via Promote (force)
+
+    if moved_student_ids:
+        ledger = get_ledger_totals_bulk(moved_student_ids)
+        out["balance_carried_forward"] = float(
+            sum((t["balance"] for t in ledger.values() if t["balance"] > 0), Decimal("0"))
+        )
 
     models.ClassroomPromotion.objects.create(
         source_classroom=classroom, target_classroom=target, promoted_by=None, student_count=out["promoted"]
@@ -3175,6 +3404,7 @@ def run_auto_promotion(dry_run=False, scheduled=False, triggered_by=None, ignore
         "graduated": sum(r["graduated"] for r in results),
         "repeating": sum(len(r["repeating"]) for r in results),
         "held": sum(len(r["held"]) for r in results),
+        "balance_carried_forward": sum(r.get("balance_carried_forward", 0) for r in results),
         "classes": results, "errors": errors,
         "already_promoted": already_promoted,
     }
@@ -3274,6 +3504,7 @@ def _allocate_payment(student, amount, method, reference, recorded_by, receipt_n
     remaining = Decimal(str(amount))
     if remaining <= 0:
         raise ValueError("Payment amount must be greater than zero.")
+    sync_invoice_chains([student.id])
     payments = []
 
     while remaining > 0:

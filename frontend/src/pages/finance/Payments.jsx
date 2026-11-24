@@ -130,8 +130,9 @@ export default function FinancePayments() {
     try {
       const { data } = await financeApi.invoices({ search: term, page_size: 200 });
       const rows = data.results ?? data;
-      const outstanding = rows.filter((inv) => Number(inv.balance) > 0);
-      const grouped = groupInvoicesByStudent(outstanding);
+      // Every student with an invoice is listed - including those who are fully paid (balance 0)
+      // or already in credit - so the cashier can still take an advance payment for them.
+      const grouped = groupInvoicesByStudent(rows);
       setStudentResults(grouped);
       // exactly one match -> auto-select; otherwise keep the current pick if it is still listed
       if (grouped.length === 1) {
@@ -140,7 +141,7 @@ export default function FinancePayments() {
         setSelectedAdmission(null);
       }
       if (grouped.length === 0) {
-        setStudentSearchError("No matching student with an outstanding balance was found.");
+        setStudentSearchError("No matching student was found.");
       }
     } catch (err) {
       setStudentSearchError("Could not search invoices. Please try again.");
@@ -199,7 +200,7 @@ export default function FinancePayments() {
       student_name: student.student_name,
       totalOwed,
     });
-    setPaymentDraft({ amount: String(totalOwed), method: "MPESA", reference: "" });
+    setPaymentDraft({ amount: totalOwed > 0 ? String(totalOwed) : "", method: "MPESA", reference: "" });
     setPaymentError("");
     setShowConfirm(false);
     setConfirmChecked(false);
@@ -222,7 +223,7 @@ export default function FinancePayments() {
 
   const amountNumber = Number(paymentDraft.amount || 0);
   const activeBalanceDue = payingBalance ? payingBalance.totalOwed : 0;
-  const excessOverBalance = amountNumber > activeBalanceDue ? amountNumber - activeBalanceDue : 0;
+  const excessOverBalance = amountNumber > Math.max(activeBalanceDue, 0) ? amountNumber - Math.max(activeBalanceDue, 0) : 0;
   // What the student will still owe (or hold as credit, if negative) after this payment.
   const balanceAfterPayment = activeBalanceDue - amountNumber;
 
@@ -836,19 +837,16 @@ export default function FinancePayments() {
       const rows = data.results ?? data;
 
       const sheetData = rows.map((p) => ({
+        "Receipt No": p.receipt_no || "",
         "Date Paid": p.paid_at ? new Date(p.paid_at).toLocaleString() : "",
         "Admission No": p.admission_no,
         "Student Name": p.student_name,
-        "Student Phone": p.student_phone,
-        "Guardian Name": p.guardian_name || "",
-        "Guardian Phone": p.guardian_phone || "",
         Classroom: p.classroom,
         "Academic Year": p.academic_year,
         Term: p.term,
         "Amount (KES)": Number(p.amount),
         Method: METHOD_LABEL[p.method] || p.method,
         Reference: p.reference || "",
-        "Receipt No": p.receipt_no || "",
         "Recorded By": p.recorded_by_name,
       }));
 
@@ -1188,7 +1186,13 @@ export default function FinancePayments() {
                   <div>
                     <div className="person-card__name">
                       {selectedStudent.student_name}
-                      <span className="status-pill status-pill--warning">Balance due</span>
+                      {selectedTotalOwed > 0 ? (
+                        <span className="status-pill status-pill--warning">Balance due</span>
+                      ) : selectedTotalOwed < 0 ? (
+                        <span className="status-pill status-pill--success">In credit</span>
+                      ) : (
+                        <span className="status-pill status-pill--success">Fully paid</span>
+                      )}
                     </div>
                     <div className="person-card__meta">
                       <span>
@@ -1208,8 +1212,8 @@ export default function FinancePayments() {
                       <span>KES {currency(selectedLatestInvoice?.amount_paid)}</span>
                     </div>
                     <div className="kv-row kv-row--accent">
-                      <span>Balance:</span>
-                      <span>KES {currency(selectedTotalOwed)}</span>
+                      <span>{selectedTotalOwed < 0 ? "Credit (prepaid):" : "Balance:"}</span>
+                      <span>KES {currency(Math.abs(selectedTotalOwed))}</span>
                     </div>
                   </div>
                 </div>
@@ -1224,22 +1228,48 @@ export default function FinancePayments() {
                             <tr>
                               <th>Term</th>
                               <th>Class</th>
-                              <th className="text-end">Due</th>
+                              <th className="text-end">Term Fee</th>
+                              <th className="text-end">Brought Fwd</th>
                               <th className="text-end">Paid</th>
                               <th className="text-end">Balance</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {selectedStudent.invoices.map((inv) => (
-                              <tr key={inv.id}>
-                                <td>{inv.term_label}</td>
-                                <td>{inv.grade_level_name}</td>
-                                <td className="cell-num">KES {currency(inv.amount_due)}</td>
-                                <td className="cell-num text-ok">KES {currency(inv.amount_paid)}</td>
-                                <td className="cell-num fw-bold">KES {currency(inv.balance)}</td>
-                              </tr>
-                            ))}
+                            {selectedStudent.invoices.map((inv) => {
+                              // Each invoice's balance already CONTAINS what was brought forward
+                              // from earlier terms, so only the latest invoice's balance is the
+                              // real amount owed. Older rows are shown as "carried forward" so the
+                              // same arrears are never counted twice.
+                              const isLatest = selectedLatestInvoice && inv.id === selectedLatestInvoice.id;
+                              const ownFee = inv.term_charge ?? Number(inv.amount_due) - Number(inv.brought_forward || 0);
+                              return (
+                                <tr key={inv.id} className={isLatest ? "" : "text-muted"}>
+                                  <td>{inv.term_label}</td>
+                                  <td>{inv.grade_level_name}</td>
+                                  <td className="cell-num">KES {currency(ownFee)}</td>
+                                  <td className="cell-num">KES {currency(inv.brought_forward)}</td>
+                                  <td className="cell-num text-ok">KES {currency(inv.amount_paid)}</td>
+                                  <td className={`cell-num ${isLatest ? "fw-bold" : ""}`}>
+                                    {isLatest ? (
+                                      `KES ${currency(inv.balance)}`
+                                    ) : Number(inv.balance) > 0 ? (
+                                      <span title="This balance has been carried into a later term's invoice">
+                                        carried forward
+                                      </span>
+                                    ) : (
+                                      `KES ${currency(inv.balance)}`
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
+                          <tfoot>
+                            <tr>
+                              <th colSpan={5} className="text-end">Total outstanding</th>
+                              <th className="cell-num text-owe">KES {currency(selectedTotalOwed)}</th>
+                            </tr>
+                          </tfoot>
                         </table>
                       </div>
                     </div>
@@ -1297,6 +1327,12 @@ export default function FinancePayments() {
                           <i className="bi bi-info-circle me-1"></i>
                           KES {currency(excessOverBalance)} above the balance will be saved as credit and
                           automatically applied to this student's next term invoice.
+                        </div>
+                      ) : activeBalanceDue <= 0 ? (
+                        <div className="form-text-hint text-ok">
+                          <i className="bi bi-info-circle me-1"></i>
+                          This student has no balance{activeBalanceDue < 0 ? ` (already KES ${currency(-activeBalanceDue)} in credit)` : ""}.
+                          Enter an advance amount - it will be saved as credit and deducted from their next term's invoice.
                         </div>
                       ) : (
                         <div className="form-text-hint">
@@ -1719,7 +1755,7 @@ export default function FinancePayments() {
               <i className="bi bi-search" aria-hidden="true"></i>
               <input
                 className="form-control"
-                placeholder="Search student, adm no, phone..."
+                placeholder="Search student, adm no, receipt no..."
                 aria-label="Search payments"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -1966,7 +2002,7 @@ export default function FinancePayments() {
           </div>
 
           {listLoading ? (
-            <TableSkeleton rows={5} columns={13} />
+            <TableSkeleton rows={5} columns={11} />
           ) : payments.length === 0 ? (
             <div className="empty-state">
               <i className="bi bi-cash-stack"></i>
@@ -1984,11 +2020,9 @@ export default function FinancePayments() {
                   <thead>
                     <tr>
                       <th>Date</th>
+                      <th>Receipt No</th>
                       <th>Admission No</th>
                       <th>Student</th>
-                      <th>Phone</th>
-                      <th>Guardian</th>
-                      <th>Guardian Phone</th>
                       <th>Class</th>
                       <th>Term</th>
                       <th className="text-end">Amount</th>
@@ -2004,6 +2038,7 @@ export default function FinancePayments() {
                         <td className="cell-muted">
                           {p.paid_at ? new Date(p.paid_at).toLocaleDateString("en-KE") : "-"}
                         </td>
+                        <td className="cell-mono fw-semibold">{p.receipt_no || <span className="cell-muted">-</span>}</td>
                         <td className="cell-mono text-brand fw-semibold">{p.admission_no}</td>
                         <td>
                           <div className="table-avatar-cell">
@@ -2011,9 +2046,6 @@ export default function FinancePayments() {
                             <span className="cell-name">{p.student_name}</span>
                           </div>
                         </td>
-                        <td className="cell-mono">{p.student_phone || <span className="cell-muted">-</span>}</td>
-                        <td>{p.guardian_name || <span className="cell-muted">-</span>}</td>
-                        <td className="cell-mono">{p.guardian_phone || <span className="cell-muted">-</span>}</td>
                         <td>{p.classroom ? <span className="chip">{p.classroom}</span> : "-"}</td>
                         <td>{p.term}</td>
                         <td className="cell-num fw-bold text-ok">KES {currency(p.amount)}</td>

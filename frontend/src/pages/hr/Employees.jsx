@@ -1021,7 +1021,7 @@ export default function Employees() {
         </div>
 
         {loading ? (
-          <TableSkeleton rows={10} columns={7} />
+          <TableSkeleton rows={10} columns={9} />
         ) : rows.length === 0 ? (
           <div className="empty-state">
             <i className="bi bi-person-vcard"></i>
@@ -1039,6 +1039,8 @@ export default function Employees() {
                 <tr>
                   <th>Employee No</th>
                   <th>Name</th>
+                  <th>Phone</th>
+                  <th>Email</th>
                   <th>Category</th>
                   <th>Department</th>
                   <th>Account</th>
@@ -1079,6 +1081,26 @@ export default function Employees() {
                             {r.full_name}
                           </button>
                         </div>
+                      </td>
+                      <td className="text-nowrap">
+                        {r.phone ? (
+                          <a href={`tel:${r.phone}`} className="text-decoration-none">
+                            <i className="bi bi-telephone me-1 text-muted"></i>
+                            {r.phone}
+                          </a>
+                        ) : (
+                          <span className="cell-muted">—</span>
+                        )}
+                      </td>
+                      <td style={{ overflowWrap: "anywhere", minWidth: "180px" }}>
+                        {r.email ? (
+                          <a href={`mailto:${r.email}`} className="text-decoration-none">
+                            <i className="bi bi-envelope me-1 text-muted"></i>
+                            {r.email}
+                          </a>
+                        ) : (
+                          <span className="cell-muted">—</span>
+                        )}
                       </td>
                       <td>
                         <span className="badge badge-blue">
